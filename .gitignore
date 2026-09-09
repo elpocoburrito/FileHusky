@@ -1,0 +1,13 @@
+# Dependencies
+node_modules/
+
+# Runtime / cache
+*.log
+tmp/
+
+# Large test media (keep local only)
+test.mp4
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
