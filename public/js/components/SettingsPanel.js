@@ -173,6 +173,18 @@ const SettingsPanel = {
 
             <div class="setting-row">
               <div class="setting-text">
+                <span class="setting-name">Video codec</span>
+                <span class="setting-desc">HEVC uses ~40% less data; Auto picks it only where the device can decode it</span>
+              </div>
+              <select v-model="s.videoCodec" class="setting-select" aria-label="Video codec">
+                <option value="auto">Auto</option>
+                <option value="h264">H.264</option>
+                <option value="hevc">HEVC</option>
+              </select>
+            </div>
+
+            <div class="setting-row">
+              <div class="setting-text">
                 <span class="setting-name">Autoplay</span>
                 <span class="setting-desc">Start playing when a video is opened</span>
               </div>

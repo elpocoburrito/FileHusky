@@ -6,6 +6,22 @@ const VIDEO_EXT_DIRECT = new Set(['.mp4', '.m4v', '.mov', '.webm', '.m4v']);
 const DIRECT_VIDEO_CODECS = new Set(['h264', 'vp9', 'av1']);
 const DIRECT_AUDIO_CODECS = new Set(['aac', 'mp3', 'opus', 'vorbis', 'flac']);
 
+// HEVC decode capability: MSE (hls.js path) or native HLS (Safari/iOS).
+// Probed once per session — decoding hardware does not change mid-session.
+let _hevcOk = null;
+function hevcSupported() {
+  if (_hevcOk !== null) return _hevcOk;
+  try {
+    // A representative Main@L3.1 profile string; devices able to decode
+    // HEVC in MP4 report true (hls.js serves HEVC in fMP4)
+    _hevcOk = typeof MediaSource !== 'undefined' &&
+      MediaSource.isTypeSupported('video/mp4; codecs="hvc1.1.6.L93.B0"');
+  } catch (_) {
+    _hevcOk = false;
+  }
+  return _hevcOk;
+}
+
 const VideoPlayer = {
   name: 'VideoPlayer',
   props: {
@@ -45,11 +61,15 @@ const VideoPlayer = {
       copied: false,
       qualityOpen: false,
       pendingSeek: 0,          // restart-at-position (quality change)
+      activeCodec: 'h264',     // codec actually in use for this session
     };
   },
 
   computed: {
     s() { return SettingsStore.settings; },
+
+    // Template needs to disable the HEVC option on unsupported devices
+    hevcSupported: () => hevcSupported(),
 
     displayName() {
       return this.fileName || this.path.split(/[\\/]/).pop();
@@ -114,7 +134,8 @@ const VideoPlayer = {
       if (this.useDirect) return 'Direct play — original quality, no transcoding';
       const res = this.s.videoResolution === 'orig' ? 'original resolution' : this.s.videoResolution + 'p';
       const speed = { fast: 'fastest', balanced: 'balanced', best: 'best' }[this.s.encodeSpeed] || 'fastest';
-      return 'Transcoding · ' + res + ' · ' + this.s.videoQuality + ' quality · ' + speed + ' encoding';
+      const codecName = this.activeCodec === 'hevc' ? 'HEVC' : 'H.264';
+      return 'Transcoding · ' + res + ' · ' + this.s.videoQuality + ' quality · ' + speed + ' encoding · ' + codecName;
     },
 
     // ── Quality menu options ──
@@ -140,6 +161,15 @@ const VideoPlayer = {
         { value: 'fast', label: 'Fastest · uses more data' },
         { value: 'balanced', label: 'Balanced' },
         { value: 'best', label: 'Best compression · most CPU/GPU' },
+      ];
+    },
+
+    codecOptions() {
+      const hevc = hevcSupported();
+      return [
+        { value: 'auto', label: 'Auto' + (hevc ? ' · HEVC here' : ' · H.264 here') },
+        { value: 'h264', label: 'H.264 · max compatibility' },
+        { value: 'hevc', label: 'HEVC · ~40% less data' + (hevc ? '' : ' · NOT supported on this device') },
       ];
     },
   },
@@ -196,9 +226,14 @@ const VideoPlayer = {
 
         // 2. Start transcode session with current quality settings
         this.statusText = 'Starting transcoder…';
+        const requestedCodec = this.s.videoCodec === 'auto'
+          ? (hevcSupported() ? 'hevc' : 'h264')
+          : this.s.videoCodec;
+        this.activeCodec = requestedCodec;
         const params = 'res=' + encodeURIComponent(this.s.videoResolution) +
           '&cq=' + encodeURIComponent(this.s.videoQuality) +
-          '&speed=' + encodeURIComponent(this.s.encodeSpeed);
+          '&speed=' + encodeURIComponent(this.s.encodeSpeed) +
+          '&codec=' + encodeURIComponent(requestedCodec);
         this.stream = await Utils.api('/api/video/stream/start?path=' +
           encodeURIComponent(this.path) + '&' + params);
         this.totalSegments = this.stream.segments;
@@ -624,7 +659,14 @@ const VideoPlayer = {
                     class="vq-option" :class="{ 'vq-on': s.encodeSpeed === opt.value }"
                     @click="setQuality('encodeSpeed', opt.value)">{{ opt.label }}</button>
           </div>
-          <p class="vq-note">Slower encoding = smaller file at the same quality. Uses more CPU/GPU.</p>
+          <div class="vq-group">
+            <div class="vq-title">Codec</div>
+            <button v-for="opt in codecOptions" :key="opt.value"
+                    class="vq-option" :class="{ 'vq-on': s.videoCodec === opt.value }"
+                    :disabled="opt.value === 'hevc' && !hevcSupported"
+                    @click="setQuality('videoCodec', opt.value)">{{ opt.label }}</button>
+          </div>
+          <p class="vq-note">Slower encoding = smaller files at the same quality, but uses more CPU/GPU. HEVC plays only on devices with hardware HEVC decoding — Auto picks it only when supported.</p>
         </div>
 
         <div class="vc-seek-row">

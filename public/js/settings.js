@@ -17,6 +17,7 @@ const SettingsStore = (function () {
     videoResolution: '720',      // '480' | '720' | '1080' | 'orig'
     videoQuality: 'medium',      // 'low' | 'medium' | 'high' (encoder quality)
     encodeSpeed: 'fast',         // 'fast' | 'balanced' | 'best' (compression efficiency)
+    videoCodec: 'auto',          // 'auto' | 'h264' | 'hevc'
     // Browsing
     rememberPath: true,          // reopen the last visited folder
   };
