@@ -60,8 +60,10 @@ function detectHwEncoder() {
   if (!FFMPEG) return 'libx264';
   for (const enc of HW_ENCODERS) {
     try {
+      // Note: 256x256 because NVENC rejects resolutions below ~145x49,
+      // which made the old 64x48 probe always fail on NVIDIA GPUs
       execSync(
-        FFMPEG + ' -hide_banner -f lavfi -i nullsrc=s=64x48 -frames:v 1 -c:v ' + enc +
+        FFMPEG + ' -hide_banner -f lavfi -i nullsrc=s=256x256 -frames:v 1 -c:v ' + enc +
         ' -f null - 2>&1',
         { stdio: 'pipe', timeout: 5000 }
       );
