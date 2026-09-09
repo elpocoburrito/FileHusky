@@ -73,14 +73,51 @@ function detectHwEncoder() {
   return 'libx264';
 }
 
+// ─── Hardware decoder (NVDEC) detection ────────────────────────────────────
+// Offloads video DECODING to the GPU (NVDEC on NVIDIA). Frames are decoded on
+// the GPU and downloaded to system memory, so pixel-format handling and the
+// encoder input are unchanged. Only enabled alongside the NVENC encoder;
+// streams whose codec NVDEC cannot handle fall back to software decoding.
+const NVDEC_CODECS = new Set([
+  'h264', 'hevc', 'mpeg1video', 'mpeg2video', 'mpeg4', 'vc1', 'vp8', 'vp9', 'av1'
+]);
+const DECODE_ARGS = detectHwDecode();
+console.log('decoder: ' + (DECODE_ARGS.length ? 'NVDEC (hwaccel cuda)' : 'software'));
+
+function detectHwDecode() {
+  if (ENCODER !== 'h264_nvenc') return [];  // decode acceleration wired for NVIDIA only
+  const probe = path.join(CACHE_DIR, 'decode-test.mp4');
+  try {
+    // Generate a tiny h264 clip, then try decoding it with NVDEC
+    execSync(
+      FFMPEG + ' -hide_banner -loglevel error -f lavfi -i testsrc2=s=256x256:d=0.3 ' +
+      '-c:v libx264 -preset ultrafast -f mp4 -y "' + probe + '" 2>&1',
+      { stdio: 'pipe', timeout: 20000 }
+    );
+    try {
+      execSync(
+        FFMPEG + ' -hide_banner -loglevel error -hwaccel cuda -i "' + probe +
+        '" -frames:v 1 -f null - 2>&1',
+        { stdio: 'pipe', timeout: 20000 }
+      );
+      return ['-hwaccel', 'cuda'];
+    } finally {
+      try { fs.unlinkSync(probe); } catch (_) {}
+    }
+  } catch (_) {
+    return [];
+  }
+}
+
 /** Build ffmpeg arguments for transcoding a segment */
-function buildTranscodeArgs(seg, filePath) {
-  // Base args: input seeking
-  const args = [
+function buildTranscodeArgs(seg, filePath, decodeArgs) {
+  // Hardware decode flags must come before the input they apply to
+  const args = (decodeArgs || []).slice();
+  args.push(
     '-ss', String(seg.startTime),
     '-i', filePath,
     '-t', String(seg.duration)
-  ];
+  );
 
   // Add video encoder flags
   const enc = ENCODER;
@@ -232,11 +269,16 @@ class VideoStream {
     this._pipelineIndex = 0;     // next segment to transcode in background
     this._pipelineActive = false; // whether background pipeline is running
     this._prioQueue = [];         // segments requested on-demand (seek), process these first
+    this.decodeArgs = [];         // hw decode flags for this stream (set in init)
     fs.mkdirSync(this.cacheDir, { recursive: true });
   }
 
   async init() {
     this.metadata = await getVideoMetadata(this.filePath);
+    // Use GPU decoding only for codecs NVDEC supports (others use software decode)
+    this.decodeArgs = (DECODE_ARGS.length && NVDEC_CODECS.has(this.metadata.codec))
+      ? DECODE_ARGS.slice()
+      : [];
     const totalSegs = Math.ceil(this.metadata.duration / SEGMENT_DURATION);
     for (let i = 0; i < totalSegs; i++) {
       const startTime = i * SEGMENT_DURATION;
@@ -308,21 +350,39 @@ class VideoStream {
         return;
       }
       seg.transcoding = true;
-      const args = buildTranscodeArgs(seg, this.filePath);
+      // Remember whether this attempt used hardware decode, so the fallback
+      // below triggers per-segment even when several segments fail at once
+      seg.usedHwDecode = this.decodeArgs.length > 0;
+      const args = buildTranscodeArgs(seg, this.filePath, this.decodeArgs);
       const proc = spawn(FFMPEG, args);
       proc.on('close', (code) => {
         seg.transcoding = false;
         const ok = (code === 0 && fs.existsSync(seg.path) && fs.statSync(seg.path).size > 0);
         if (ok) {
           seg.cached = true;
-        } else {
-          try { fs.unlinkSync(seg.path); } catch (_) {}
+          const waiters = seg.queue;
+          seg.queue = [];
+          for (const fn of waiters) fn(true);
+          resolve(true);
+          return;
         }
-        // Resolve all waiters
+        try { fs.unlinkSync(seg.path); } catch (_) {}
+        // This segment was attempted with hardware decode and failed —
+        // disable hw decoding for the whole stream and retry this segment
+        // once with software decoding. Waiters stay queued and are notified
+        // when the retry completes.
+        if (seg.usedHwDecode) {
+          seg.usedHwDecode = false;
+          this.decodeArgs = [];
+          console.warn('Hardware decode failed for "' + path.basename(this.filePath) +
+            '", falling back to software decoding');
+          this._startTranscode(index).then((ok2) => resolve(ok2));
+          return;
+        }
         const waiters = seg.queue;
         seg.queue = [];
-        for (const fn of waiters) fn(ok);
-        resolve(ok);
+        for (const fn of waiters) fn(false);
+        resolve(false);
       });
       proc.on('error', () => {
         seg.transcoding = false;
