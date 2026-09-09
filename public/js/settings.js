@@ -14,6 +14,9 @@ const SettingsStore = (function () {
     resumePlayback: true,        // resume where you left off
     autoNext: true,              // play next video in folder when one ends
     showTranscodeInfo: true,     // show buffering / transcode progress
+    videoResolution: '720',      // '480' | '720' | '1080' | 'orig'
+    videoQuality: 'medium',      // 'low' | 'medium' | 'high' (encoder quality)
+    encodeSpeed: 'fast',         // 'fast' | 'balanced' | 'best' (compression efficiency)
     // Browsing
     rememberPath: true,          // reopen the last visited folder
   };

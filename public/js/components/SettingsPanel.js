@@ -136,6 +136,43 @@ const SettingsPanel = {
 
             <div class="setting-row">
               <div class="setting-text">
+                <span class="setting-name">Resolution</span>
+                <span class="setting-desc">Lower = much less data (never upscales)</span>
+              </div>
+              <select v-model="s.videoResolution" class="setting-select" aria-label="Streaming resolution">
+                <option value="480">480p</option>
+                <option value="720">720p</option>
+                <option value="1080">1080p</option>
+                <option value="orig">Original</option>
+              </select>
+            </div>
+
+            <div class="setting-row">
+              <div class="setting-text">
+                <span class="setting-name">Quality</span>
+                <span class="setting-desc">Lower quality = smaller files</span>
+              </div>
+              <select v-model="s.videoQuality" class="setting-select" aria-label="Encoder quality">
+                <option value="low">Low</option>
+                <option value="medium">Medium</option>
+                <option value="high">High</option>
+              </select>
+            </div>
+
+            <div class="setting-row">
+              <div class="setting-text">
+                <span class="setting-name">Encoding speed</span>
+                <span class="setting-desc">Slower = smaller files at the same quality (more CPU/GPU)</span>
+              </div>
+              <select v-model="s.encodeSpeed" class="setting-select" aria-label="Encoding speed">
+                <option value="fast">Fastest</option>
+                <option value="balanced">Balanced</option>
+                <option value="best">Best compression</option>
+              </select>
+            </div>
+
+            <div class="setting-row">
+              <div class="setting-text">
                 <span class="setting-name">Autoplay</span>
                 <span class="setting-desc">Start playing when a video is opened</span>
               </div>

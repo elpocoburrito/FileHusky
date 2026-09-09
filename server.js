@@ -56,6 +56,31 @@ const HW_ENCODERS = ['h264_qsv', 'h264_nvenc', 'h264_amf', 'h264_vaapi'];
 const ENCODER = detectHwEncoder();
 console.log('encoder: ' + ENCODER);
 
+// ─── Encoding quality / speed presets ──────────────────────────────────
+// resolution: max output height, 0 = keep original (never upscales)
+// quality:    encoder quality dial (CQ/CRF-ish, lower = better looking)
+// speed:      encoder preset — faster = less CPU/GPU per frame but worse
+//             compression (more bitrate) at the same quality
+const RESOLUTIONS = { 480: 480, 720: 720, 1080: 1080, orig: 0 };
+const QUALITIES = { low: 30, medium: 27, high: 24 };
+
+// Per-encoder preset maps for the speed setting
+const SPEED_PRESETS = {
+  h264_nvenc: { fast: 'p1', balanced: 'p4', best: 'p6' },
+  h264_qsv:   { fast: 'veryfast', balanced: 'medium', best: 'slow' },
+  h264_amf:   { fast: 'speed', balanced: 'balanced', best: 'quality' },
+  libx264:    { fast: 'veryfast', balanced: 'medium', best: 'slow' },
+  h264_vaapi: { fast: null, balanced: null, best: null }, // no preset support
+};
+
+function parseEncOptions(query) {
+  const resolution = RESOLUTIONS.hasOwnProperty(query.res) ? RESOLUTIONS[query.res] : 720;
+  const quality = QUALITIES.hasOwnProperty(query.cq) ? QUALITIES[query.cq] : 27;
+  const speed = SPEED_PRESETS[ENCODER] && ['fast', 'balanced', 'best'].includes(query.speed)
+    ? query.speed : 'fast';
+  return { resolution, quality, speed };
+}
+
 function detectHwEncoder() {
   if (!FFMPEG) return 'libx264';
   for (const enc of HW_ENCODERS) {
@@ -110,7 +135,7 @@ function detectHwDecode() {
 }
 
 /** Build ffmpeg arguments for transcoding a segment */
-function buildTranscodeArgs(seg, filePath, decodeArgs) {
+function buildTranscodeArgs(seg, filePath, decodeArgs, enc) {
   // Hardware decode flags must come before the input they apply to
   const args = (decodeArgs || []).slice();
   args.push(
@@ -119,40 +144,47 @@ function buildTranscodeArgs(seg, filePath, decodeArgs) {
     '-t', String(seg.duration)
   );
 
+  // Downscale when requested and the source is larger (never upscale).
+  // -2 keeps the aspect ratio and an even height (required by h264).
+  const enc_ = enc || { resolution: 0, quality: 23, speed: 'fast' };
+  if (enc_.resolution > 0) {
+    args.push('-vf', 'scale=-2:' + enc_.resolution);
+  }
+
   // Add video encoder flags
-  const enc = ENCODER;
-  if (enc === 'h264_qsv') {
+  const q = enc_.quality;
+  const preset = (SPEED_PRESETS[ENCODER] || {})[enc_.speed];
+  if (ENCODER === 'h264_qsv') {
     args.push(
-      '-preset', 'veryfast',
-      '-global_quality', '23',
+      '-global_quality', String(q),
       '-c:v', 'h264_qsv'
     );
-  } else if (enc === 'h264_nvenc') {
+    if (preset) args.push('-preset', preset);
+  } else if (ENCODER === 'h264_nvenc') {
     args.push(
-      '-preset', 'p1',
-      '-cq', '23',
       '-rc', 'vbr',
+      '-cq', String(q),
       '-c:v', 'h264_nvenc'
     );
-  } else if (enc === 'h264_amf') {
+    if (preset) args.push('-preset', preset);
+  } else if (ENCODER === 'h264_amf') {
     args.push(
-      '-preset', 'speed',
-      '-quality', 'balanced',
       '-rc', 'cqp',
-      '-qp_i', '23', '-qp_p', '23',
+      '-qp_i', String(q), '-qp_p', String(q),
       '-c:v', 'h264_amf'
     );
-  } else if (enc === 'h264_vaapi') {
+    if (preset) args.push('-quality', preset);
+  } else if (ENCODER === 'h264_vaapi') {
     args.push(
-      '-global_quality', '23',
+      '-global_quality', String(q),
       '-c:v', 'h264_vaapi'
     );
   } else {
     args.push(
-      '-preset', 'veryfast',
-      '-crf', '23',
+      '-crf', String(q),
       '-c:v', 'libx264'
     );
+    if (preset) args.push('-preset', preset);
   }
 
   // Audio, PTS offset, and output
@@ -259,9 +291,10 @@ const streams = new Map();
 const SEGMENT_DURATION = 6;
 
 class VideoStream {
-  constructor(id, filePath) {
+  constructor(id, filePath, encOptions) {
     this.id = id;
     this.filePath = filePath;
+    this.encOptions = encOptions || { resolution: 0, quality: 23, speed: 'fast' };
     this.segments = [];
     this.metadata = null;
     this.cleaned = false;
@@ -275,6 +308,11 @@ class VideoStream {
 
   async init() {
     this.metadata = await getVideoMetadata(this.filePath);
+    // Never upscale: if the requested resolution exceeds the source, keep original
+    if (this.encOptions.resolution > 0 && this.metadata.height &&
+        this.metadata.height <= this.encOptions.resolution) {
+      this.encOptions.resolution = 0;
+    }
     // Use GPU decoding only for codecs NVDEC supports (others use software decode)
     this.decodeArgs = (DECODE_ARGS.length && NVDEC_CODECS.has(this.metadata.codec))
       ? DECODE_ARGS.slice()
@@ -353,7 +391,7 @@ class VideoStream {
       // Remember whether this attempt used hardware decode, so the fallback
       // below triggers per-segment even when several segments fail at once
       seg.usedHwDecode = this.decodeArgs.length > 0;
-      const args = buildTranscodeArgs(seg, this.filePath, this.decodeArgs);
+      const args = buildTranscodeArgs(seg, this.filePath, this.decodeArgs, this.encOptions);
       const proc = spawn(FFMPEG, args);
       proc.on('close', (code) => {
         seg.transcoding = false;
@@ -516,7 +554,8 @@ app.get('/api/video/stream/start', async (req, res) => {
   if (!FFMPEG || !FFPROBE) return res.status(500).json({ error: 'ffmpeg/ffprobe not found' });
   try {
     const id = crypto.randomUUID().replace(/-/g, '').slice(0, 12);
-    const stream = new VideoStream(id, sp);
+    const encOptions = parseEncOptions(req.query);
+    const stream = new VideoStream(id, sp, encOptions);
     await stream.init();
     streams.set(id, stream);
     scheduleStreamCleanup(id);

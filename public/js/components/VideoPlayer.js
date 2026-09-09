@@ -2,6 +2,10 @@
 
 /* global Vue, Utils, SettingsStore, Hls */
 
+const VIDEO_EXT_DIRECT = new Set(['.mp4', '.m4v', '.mov', '.webm', '.m4v']);
+const DIRECT_VIDEO_CODECS = new Set(['h264', 'vp9', 'av1']);
+const DIRECT_AUDIO_CODECS = new Set(['aac', 'mp3', 'opus', 'vorbis', 'flac']);
+
 const VideoPlayer = {
   name: 'VideoPlayer',
   props: {
@@ -39,6 +43,8 @@ const VideoPlayer = {
       scrubbing: false,
       externalOpen: false,
       copied: false,
+      qualityOpen: false,
+      pendingSeek: 0,          // restart-at-position (quality change)
     };
   },
 
@@ -88,6 +94,54 @@ const VideoPlayer = {
     hlsUrl() {
       return this.stream ? location.origin + this.stream.playlistUrl : '';
     },
+
+    // ── Quality settings (see quality menu / settings panel) ──
+    canDirectPlay() {
+      if (!this.meta) return false;
+      const ext = this.path.slice(this.path.lastIndexOf('.')).toLowerCase();
+      return VIDEO_EXT_DIRECT.has(ext) &&
+        DIRECT_VIDEO_CODECS.has(this.meta.codec) &&
+        DIRECT_AUDIO_CODECS.has(this.meta.audioCodec);
+    },
+
+    useDirect() {
+      // 'Original' + browser-compatible file → stream the file directly,
+      // no transcoding. Falls back to transcode for incompatible files.
+      return this.s.videoResolution === 'orig' && this.canDirectPlay;
+    },
+
+    activeConfig() {
+      if (this.useDirect) return 'Direct play — original quality, no transcoding';
+      const res = this.s.videoResolution === 'orig' ? 'original resolution' : this.s.videoResolution + 'p';
+      const speed = { fast: 'fastest', balanced: 'balanced', best: 'best' }[this.s.encodeSpeed] || 'fastest';
+      return 'Transcoding · ' + res + ' · ' + this.s.videoQuality + ' quality · ' + speed + ' encoding';
+    },
+
+    // ── Quality menu options ──
+    resolutionOptions() {
+      return [
+        { value: '480', label: '480p · data saver' },
+        { value: '720', label: '720p' },
+        { value: '1080', label: '1080p' },
+        { value: 'orig', label: 'Original' + (this.canDirectPlay ? ' · direct' : '') },
+      ];
+    },
+
+    qualityOptions() {
+      return [
+        { value: 'low', label: 'Low · smallest files' },
+        { value: 'medium', label: 'Medium' },
+        { value: 'high', label: 'High · sharpest' },
+      ];
+    },
+
+    speedOptions() {
+      return [
+        { value: 'fast', label: 'Fastest · uses more data' },
+        { value: 'balanced', label: 'Balanced' },
+        { value: 'best', label: 'Best compression · most CPU/GPU' },
+      ];
+    },
   },
 
   watch: {
@@ -131,9 +185,22 @@ const VideoPlayer = {
         // 1. Metadata (duration, resolution) — shown immediately
         this.meta = await Utils.api('/api/video/metadata?path=' + encodeURIComponent(this.path));
 
-        // 2. Start transcode session
+        if (this.useDirect) {
+          // Direct play: no transcode session needed
+          this.stream = null;
+          await this.attachPlayer();
+          this.phase = 'ready';
+          this.statusText = 'Playing';
+          return;
+        }
+
+        // 2. Start transcode session with current quality settings
         this.statusText = 'Starting transcoder…';
-        this.stream = await Utils.api('/api/video/stream/start?path=' + encodeURIComponent(this.path));
+        const params = 'res=' + encodeURIComponent(this.s.videoResolution) +
+          '&cq=' + encodeURIComponent(this.s.videoQuality) +
+          '&speed=' + encodeURIComponent(this.s.encodeSpeed);
+        this.stream = await Utils.api('/api/video/stream/start?path=' +
+          encodeURIComponent(this.path) + '&' + params);
         this.totalSegments = this.stream.segments;
         this.cachedSegments = 0;
 
@@ -152,9 +219,11 @@ const VideoPlayer = {
     async attachPlayer() {
       const player = this.$refs.video;
 
-      // Restore resume position (per-browser, per-file)
-      this.resumeSeconds = 0;
-      if (this.s.resumePlayback) {
+      // Restore resume position (per-browser, per-file), or an explicit
+      // restart-at-position after a quality change
+      this.resumeSeconds = this.pendingSeek || 0;
+      this.pendingSeek = 0;
+      if (!this.resumeSeconds && this.s.resumePlayback) {
         const saved = parseFloat(localStorage.getItem('srvfiles-resume:' + this.path) || '0');
         if (saved > 15 && this.meta.duration && saved < this.meta.duration - 30) {
           this.resumeSeconds = saved;
@@ -174,7 +243,10 @@ const VideoPlayer = {
       };
       player.addEventListener('loadedmetadata', onLoaded);
 
-      if (window.Hls && Hls.isSupported()) {
+      if (this.useDirect) {
+        // Direct play of the original file (browser-compatible sources)
+        player.src = this.rawUrl;
+      } else if (window.Hls && Hls.isSupported()) {
         this.hls = new Hls({
           enableWorker: true,
           lowLatencyMode: false,
@@ -210,6 +282,20 @@ const VideoPlayer = {
       player.addEventListener('volumechange', this.onVolumeUi);
       player.addEventListener('progress', this.onBufferUi);
       this.muted = player.muted;
+    },
+
+    /** Apply a quality/speed/resolution change: seamless restart at position */
+    changePlayback() {
+      const player = this.$refs.video;
+      this.pendingSeek = (player && this.phase === 'ready') ? player.currentTime : 0;
+      this.start();
+    },
+
+    setQuality(key, value) {
+      if (this.s[key] === value) return;
+      this.s[key] = value;
+      this.qualityOpen = false;
+      this.changePlayback();
     },
 
     onTimeUpdate() {
@@ -424,6 +510,7 @@ const VideoPlayer = {
     },
 
     onVideoClick() {
+      this.qualityOpen = false;
       this.controlsVisible = !this.controlsVisible;
       if (this.controlsVisible) this.scheduleHide();
       else this.clearHideTimer();
@@ -460,7 +547,10 @@ const VideoPlayer = {
         case 'l': case 'L': this.toggleLoop(); break;
         case 'n': case 'N': this.goNext(); break;
         case 'p': case 'P': this.goPrev(); break;
-        case 'Escape': if (this.externalOpen) this.externalOpen = false; break;
+        case 'Escape':
+          if (this.externalOpen) this.externalOpen = false;
+          if (this.qualityOpen) this.qualityOpen = false;
+          break;
       }
     },
 
@@ -510,9 +600,32 @@ const VideoPlayer = {
         </button>
       </div>
 
-      <!-- ── Custom control bar (UI only) ────────────────────────────── -->
+      <!-- ── Custom control bar (UI only) ──────────────────────────── -->
       <div v-show="phase === 'ready'" class="vcontrols"
            :class="{ 'vcontrols-hidden': !controlsVisible }" @click.stop>
+
+        <!-- Quality menu popover -->
+        <div v-if="qualityOpen" class="vc-quality" @click.stop>
+          <div class="vq-group">
+            <div class="vq-title">Resolution</div>
+            <button v-for="opt in resolutionOptions" :key="opt.value"
+                    class="vq-option" :class="{ 'vq-on': s.videoResolution === opt.value }"
+                    @click="setQuality('videoResolution', opt.value)">{{ opt.label }}</button>
+          </div>
+          <div class="vq-group">
+            <div class="vq-title">Quality</div>
+            <button v-for="opt in qualityOptions" :key="opt.value"
+                    class="vq-option" :class="{ 'vq-on': s.videoQuality === opt.value }"
+                    @click="setQuality('videoQuality', opt.value)">{{ opt.label }}</button>
+          </div>
+          <div class="vq-group">
+            <div class="vq-title">Encoding speed</div>
+            <button v-for="opt in speedOptions" :key="opt.value"
+                    class="vq-option" :class="{ 'vq-on': s.encodeSpeed === opt.value }"
+                    @click="setQuality('encodeSpeed', opt.value)">{{ opt.label }}</button>
+          </div>
+          <p class="vq-note">Slower encoding = smaller file at the same quality. Uses more CPU/GPU.</p>
+        </div>
 
         <div class="vc-seek-row">
           <span class="vc-time">{{ fmt(currentTime) }}</span>
@@ -539,6 +652,9 @@ const VideoPlayer = {
           </div>
 
           <div class="vc-group">
+            <button class="vc-btn" @click="qualityOpen = !qualityOpen" title="Playback quality">
+              <ui-icon name="tune" :size="24"></ui-icon>
+            </button>
             <button class="vc-btn" :class="{ 'vc-btn-on': loopOn }" @click="toggleLoop"
                     :title="loopOn ? 'Loop on — tap to stop looping' : 'Loop this video'">
               <ui-icon name="loop" :size="24"></ui-icon>
@@ -563,6 +679,7 @@ const VideoPlayer = {
           <div class="info-titles">
             <h2 class="info-name">{{ displayName }}</h2>
             <p class="info-sub">{{ resolutionText }}</p>
+            <p class="info-sub info-config">{{ activeConfig }}</p>
           </div>
           <button class="icon-btn" @click="restart" title="Reload video">
             <ui-icon name="refresh"></ui-icon>
@@ -579,6 +696,9 @@ const VideoPlayer = {
         </div>
         <div v-else-if="s.showTranscodeInfo && stream && fullyCached" class="buffer-done">
           <ui-icon name="check" :size="18"></ui-icon> Fully buffered
+        </div>
+        <div v-else-if="s.showTranscodeInfo && useDirect" class="buffer-done">
+          <ui-icon name="check" :size="18"></ui-icon> Direct play — no transcoding
         </div>
       </section>
 

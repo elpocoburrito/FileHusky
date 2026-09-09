@@ -871,6 +871,62 @@ button {
 .vc-btn.vc-btn-on { color: var(--accent); }
 .vc-btn.vc-btn-play { width: 52px; }
 
+/* Quality menu popover */
+.vc-quality {
+  position: absolute;
+  right: 10px;
+  bottom: calc(100% + 8px);
+  min-width: 240px;
+  max-width: 300px;
+  padding: 12px;
+  border-radius: 16px;
+  background: rgba(20, 22, 26, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  color: #fff;
+}
+
+.vq-group {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.vq-title {
+  grid-column: 1 / -1;
+  font-size: 0.72rem;
+  font-weight: 800;
+  color: #9aa0a6;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 2px;
+}
+
+.vq-option {
+  min-height: 40px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #e8eaed;
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-align: left;
+  transition: background 0.12s, color 0.12s;
+}
+
+.vq-option:hover { background: rgba(255, 255, 255, 0.14); }
+.vq-option.vq-on { background: var(--accent); color: var(--accent-contrast); }
+
+.vq-note {
+  margin: 4px 0 0;
+  font-size: 0.72rem;
+  color: #9aa0a6;
+  line-height: 1.4;
+}
+
+.info-config { font-weight: 600; color: var(--accent) !important; }
+
 /* ═══ External player modal ═══════════════════════════════════════════ */
 
 .modal-root {
