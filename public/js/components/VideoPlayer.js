@@ -21,11 +21,24 @@ const VideoPlayer = {
       cachedSegments: 0,
       totalSegments: 0,
       fullyCached: false,
-      upNext: [],              // other videos in the same folder
+      upNext: [],              // other videos in the same folder (for the list)
+      folderVideos: [],        // ALL videos of the folder, in order (for prev/next)
       resumeSeconds: 0,        // position we will resume from
       hls: null,
       statusTimer: null,
       saveTimer: null,
+
+      // ── UI-only state (custom control bar) — does not affect playback ──
+      isPlaying: false,
+      muted: false,
+      loopOn: false,
+      controlsVisible: true,
+      hideTimer: null,
+      currentTime: 0,
+      bufferedPercent: 0,
+      scrubbing: false,
+      externalOpen: false,
+      copied: false,
     };
   },
 
@@ -48,6 +61,33 @@ const VideoPlayer = {
       if (!this.totalSegments) return 0;
       return Math.round(this.cachedSegments / this.totalSegments * 100);
     },
+
+    // ── Navigation within the folder (prev/next) ──
+    currentIndex() {
+      return this.folderVideos.findIndex(v => v.path === this.path);
+    },
+    prevVideo() {
+      return this.currentIndex > 0 ? this.folderVideos[this.currentIndex - 1] : null;
+    },
+    nextVideo() {
+      const i = this.currentIndex;
+      return (i >= 0 && i < this.folderVideos.length - 1) ? this.folderVideos[i + 1] : null;
+    },
+
+    // ── Seek bar ──
+    seekMax() {
+      return (this.meta && this.meta.duration) ? this.meta.duration : 0;
+    },
+    currentTimePercent() {
+      return this.seekMax ? Math.min(100, this.currentTime / this.seekMax * 100) : 0;
+    },
+
+    rawUrl() {
+      return location.origin + '/api/video/raw?path=' + encodeURIComponent(this.path);
+    },
+    hlsUrl() {
+      return this.stream ? location.origin + this.stream.playlistUrl : '';
+    },
   },
 
   watch: {
@@ -59,11 +99,14 @@ const VideoPlayer = {
   },
 
   async mounted() {
+    document.addEventListener('keydown', this.onKey);
     await this.start();
     if (this.folder) this.loadUpNext();
   },
 
   beforeUnmount() {
+    document.removeEventListener('keydown', this.onKey);
+    this.clearHideTimer();
     this.savePosition();
     this.cleanup();
   },
@@ -75,6 +118,14 @@ const VideoPlayer = {
       this.errorMsg = null;
       this.statusText = 'Analyzing video…';
       this.fullyCached = false;
+
+      // Reset UI-only state
+      this.isPlaying = false;
+      this.loopOn = false;
+      this.currentTime = 0;
+      this.bufferedPercent = 0;
+      this.scrubbing = false;
+      this.controlsVisible = true;
 
       try {
         // 1. Metadata (duration, resolution) — shown immediately
@@ -151,6 +202,14 @@ const VideoPlayer = {
       // Save resume position periodically + on pause
       player.addEventListener('timeupdate', this.onTimeUpdate);
       player.addEventListener('ended', this.onEnded);
+
+      // ── UI-only listeners (drive the custom control bar) ──
+      player.addEventListener('timeupdate', this.onTimeUi);
+      player.addEventListener('play', this.onPlayPauseUi);
+      player.addEventListener('pause', this.onPlayPauseUi);
+      player.addEventListener('volumechange', this.onVolumeUi);
+      player.addEventListener('progress', this.onBufferUi);
+      this.muted = player.muted;
     },
 
     onTimeUpdate() {
@@ -176,9 +235,10 @@ const VideoPlayer = {
     },
 
     onEnded() {
+      if (this.loopOn) return; // looping is handled natively by the video element
       localStorage.removeItem('srvfiles-resume:' + this.path);
-      if (this.s.autoNext && this.upNext.length > 0) {
-        this.openVideo(this.upNext[0]);
+      if (this.s.autoNext && this.nextVideo) {
+        this.openVideo(this.nextVideo);
       }
     },
 
@@ -211,9 +271,9 @@ const VideoPlayer = {
     async loadUpNext() {
       try {
         const data = await Utils.api('/api/browse?path=' + encodeURIComponent(this.folder));
-        this.upNext = data.contents.filter(
-          c => c.isVideo && c.path !== this.path
-        );
+        const videos = data.contents.filter(c => c.isVideo);
+        this.folderVideos = videos;                              // ordered, for prev/next
+        this.upNext = videos.filter(c => c.path !== this.path);  // for the list
       } catch (_) { /* folder may be gone; ignore */ }
     },
 
@@ -225,6 +285,14 @@ const VideoPlayer = {
         fileName: item.name,
         folder: this.folder,
       });
+    },
+
+    goPrev() {
+      if (this.prevVideo) this.openVideo(this.prevVideo);
+    },
+
+    goNext() {
+      if (this.nextVideo) this.openVideo(this.nextVideo);
     },
 
     restart() {
@@ -243,9 +311,168 @@ const VideoPlayer = {
       if (player) {
         player.removeEventListener('timeupdate', this.onTimeUpdate);
         player.removeEventListener('ended', this.onEnded);
+        player.removeEventListener('timeupdate', this.onTimeUi);
+        player.removeEventListener('play', this.onPlayPauseUi);
+        player.removeEventListener('pause', this.onPlayPauseUi);
+        player.removeEventListener('volumechange', this.onVolumeUi);
+        player.removeEventListener('progress', this.onBufferUi);
         player.pause();
         player.removeAttribute('src');
         player.load();
+      }
+    },
+
+    // ═══ UI-only methods (control bar) ═══════════════════════════════════
+
+    fmt(t) {
+      return Utils.formatDuration(t);
+    },
+
+    onTimeUi() {
+      const player = this.$refs.video;
+      if (!player || this.scrubbing) return;
+      this.currentTime = player.currentTime;
+      this.onBufferUi();
+    },
+
+    onPlayPauseUi() {
+      const player = this.$refs.video;
+      if (!player) return;
+      this.isPlaying = !player.paused;
+      if (player.paused) {
+        this.controlsVisible = true;
+        this.clearHideTimer();
+      } else {
+        this.scheduleHide();
+      }
+    },
+
+    onVolumeUi() {
+      const player = this.$refs.video;
+      if (!player) return;
+      this.muted = player.muted || player.volume === 0;
+    },
+
+    onBufferUi() {
+      const player = this.$refs.video;
+      if (!player || !this.seekMax) return;
+      let end = 0;
+      for (let i = 0; i < player.buffered.length; i++) {
+        if (player.buffered.start(i) <= player.currentTime + 1 && player.buffered.end(i) > end) {
+          end = player.buffered.end(i);
+        }
+      }
+      this.bufferedPercent = Math.min(100, end / this.seekMax * 100);
+    },
+
+    togglePlay() {
+      const player = this.$refs.video;
+      if (!player) return;
+      if (player.paused) player.play().catch(() => {});
+      else player.pause();
+    },
+
+    toggleMute() {
+      const player = this.$refs.video;
+      if (!player) return;
+      player.muted = !player.muted;
+    },
+
+    toggleLoop() {
+      const player = this.$refs.video;
+      if (!player) return;
+      player.loop = !player.loop;
+      this.loopOn = player.loop;
+    },
+
+    toggleFullscreen() {
+      const area = this.$refs.videoArea;
+      const player = this.$refs.video;
+      if (document.fullscreenElement) {
+        document.exitFullscreen().catch(() => {});
+      } else if (area && area.requestFullscreen) {
+        area.requestFullscreen().catch(() => {});
+      } else if (player && player.webkitEnterFullscreen) {
+        player.webkitEnterFullscreen(); // iOS Safari: fullscreen for the video element
+      }
+    },
+
+    seekInput(e) {
+      // Preview only — commit on change so dragging feels smooth
+      this.scrubbing = true;
+      this.currentTime = parseFloat(e.target.value);
+    },
+
+    seekCommit(e) {
+      const player = this.$refs.video;
+      const t = parseFloat(e.target.value);
+      this.scrubbing = false;
+      this.currentTime = t;
+      if (player) player.currentTime = t;
+      this.scheduleHide();
+    },
+
+    seekStyle() {
+      const cur = this.currentTimePercent;
+      const buf = Math.max(cur, this.bufferedPercent);
+      return {
+        background: 'linear-gradient(to right,' +
+          ' var(--accent) 0%, var(--accent) ' + cur + '%,' +
+          ' rgba(255,255,255,.45) ' + cur + '%, rgba(255,255,255,.45) ' + buf + '%,' +
+          ' rgba(255,255,255,.22) ' + buf + '%, rgba(255,255,255,.22) 100%)',
+      };
+    },
+
+    onVideoClick() {
+      this.controlsVisible = !this.controlsVisible;
+      if (this.controlsVisible) this.scheduleHide();
+      else this.clearHideTimer();
+    },
+
+    showControls() {
+      this.controlsVisible = true;
+      this.scheduleHide();
+    },
+
+    scheduleHide() {
+      this.clearHideTimer();
+      const player = this.$refs.video;
+      if (!player || player.paused) return; // always show controls when paused
+      this.hideTimer = setTimeout(() => { this.controlsVisible = false; }, 3000);
+    },
+
+    clearHideTimer() {
+      if (this.hideTimer) { clearTimeout(this.hideTimer); this.hideTimer = null; }
+    },
+
+    onKey(e) {
+      if (this.phase !== 'ready' || this.externalOpen) return;
+      const tag = (document.activeElement && document.activeElement.tagName) || '';
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      const player = this.$refs.video;
+      if (!player) return;
+      switch (e.key) {
+        case ' ': e.preventDefault(); this.togglePlay(); break;
+        case 'ArrowLeft': player.currentTime = Math.max(0, player.currentTime - 10); break;
+        case 'ArrowRight': player.currentTime = player.currentTime + 10; break;
+        case 'm': case 'M': this.toggleMute(); break;
+        case 'f': case 'F': this.toggleFullscreen(); break;
+        case 'l': case 'L': this.toggleLoop(); break;
+        case 'n': case 'N': this.goNext(); break;
+        case 'p': case 'P': this.goPrev(); break;
+        case 'Escape': if (this.externalOpen) this.externalOpen = false; break;
+      }
+    },
+
+    async copyLink() {
+      try {
+        await navigator.clipboard.writeText(this.rawUrl);
+        this.copied = true;
+        setTimeout(() => { this.copied = false; }, 2000);
+      } catch (_) {
+        // Fallback for browsers without clipboard permission
+        const input = this.$refs.rawInput;
+        if (input) { input.select(); document.execCommand('copy'); this.copied = true; setTimeout(() => { this.copied = false; }, 2000); }
       }
     },
   },
@@ -267,8 +494,8 @@ const VideoPlayer = {
     </header>
 
     <!-- ── Sticky video area ─────────────────────────────────────────── -->
-    <div class="video-area">
-      <video ref="video" class="video-el" controls playsinline preload="auto"></video>
+    <div class="video-area" ref="videoArea">
+      <video ref="video" class="video-el" playsinline preload="auto" @click="onVideoClick"></video>
 
       <div v-if="phase === 'loading'" class="video-overlay">
         <div class="spinner"></div>
@@ -281,6 +508,49 @@ const VideoPlayer = {
         <button class="btn primary" @click="restart">
           <ui-icon name="restart" :size="20"></ui-icon> Restart playback
         </button>
+      </div>
+
+      <!-- ── Custom control bar (UI only) ────────────────────────────── -->
+      <div v-show="phase === 'ready'" class="vcontrols"
+           :class="{ 'vcontrols-hidden': !controlsVisible }" @click.stop>
+
+        <div class="vc-seek-row">
+          <span class="vc-time">{{ fmt(currentTime) }}</span>
+          <input class="vc-seek" type="range" min="0" :max="seekMax || 0" step="0.1"
+                 :value="currentTime" :disabled="!seekMax" :style="seekStyle()"
+                 @input="seekInput" @change="seekCommit" aria-label="Seek">
+          <span class="vc-time vc-time-dur">{{ fmt(seekMax) }}</span>
+        </div>
+
+        <div class="vc-btn-row">
+          <div class="vc-group">
+            <button class="vc-btn" :disabled="!prevVideo" @click="goPrev" title="Previous video">
+              <ui-icon name="skipPrev" :size="26"></ui-icon>
+            </button>
+            <button class="vc-btn vc-btn-play" @click="togglePlay" :title="isPlaying ? 'Pause' : 'Play'">
+              <ui-icon :name="isPlaying ? 'pause' : 'play'" :size="30"></ui-icon>
+            </button>
+            <button class="vc-btn" :disabled="!nextVideo" @click="goNext" title="Next video">
+              <ui-icon name="skipNext" :size="26"></ui-icon>
+            </button>
+            <button class="vc-btn" @click="toggleMute" :title="muted ? 'Unmute' : 'Mute'">
+              <ui-icon :name="muted ? 'volumeOff' : 'volumeUp'" :size="26"></ui-icon>
+            </button>
+          </div>
+
+          <div class="vc-group">
+            <button class="vc-btn" :class="{ 'vc-btn-on': loopOn }" @click="toggleLoop"
+                    :title="loopOn ? 'Loop on — tap to stop looping' : 'Loop this video'">
+              <ui-icon name="loop" :size="24"></ui-icon>
+            </button>
+            <button class="vc-btn" @click="externalOpen = true" title="Open in external player">
+              <ui-icon name="openExternal" :size="24"></ui-icon>
+            </button>
+            <button class="vc-btn" @click="toggleFullscreen" title="Fullscreen">
+              <ui-icon name="fullscreen" :size="26"></ui-icon>
+            </button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -329,6 +599,40 @@ const VideoPlayer = {
         </ul>
       </section>
     </main>
+
+    <!-- ── External player modal ─────────────────────────────────────── -->
+    <div v-if="externalOpen" class="modal-root" @click.self="externalOpen = false">
+      <div class="modal-card" role="dialog" aria-modal="true" aria-label="Open in external player">
+        <header class="modal-header">
+          <h2>Open in external player</h2>
+          <button class="icon-btn" @click="externalOpen = false" title="Close">
+            <ui-icon name="close"></ui-icon>
+          </button>
+        </header>
+
+        <p class="modal-note">
+          Copy this direct link and open it in VLC, mpv, Infuse or any video app
+          via “Open network stream”. The original file streams with full seeking support.
+        </p>
+
+        <div class="url-row">
+          <input ref="rawInput" class="url-input" type="text" readonly
+                 :value="rawUrl" @focus="$event.target.select()" spellcheck="false">
+          <button class="btn primary" @click="copyLink">{{ copied ? 'Copied!' : 'Copy' }}</button>
+        </div>
+
+        <div class="scheme-grid">
+          <a class="btn" :href="'vlc://' + rawUrl">Open in VLC</a>
+          <a class="btn" :href="'nplayer-' + rawUrl">Open in nPlayer</a>
+          <a class="btn" :href="rawUrl" target="_blank" rel="noopener">Open in browser</a>
+        </div>
+
+        <p v-if="hlsUrl" class="modal-note">
+          Transcoded HLS link (for players that support HLS):
+          <span class="url-text">{{ hlsUrl }}</span>
+        </p>
+      </div>
+    </div>
   </div>
   `,
 };

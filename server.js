@@ -425,6 +425,15 @@ app.get('/api/browse', (req, res) => {
   }
 });
 
+app.get('/api/video/raw', (req, res) => {
+  const sp = safePath(req.query.path);
+  if (!sp) return res.status(400).json({ error: 'Invalid path' });
+  // sendFile supports HTTP Range requests, so external players / browsers can seek
+  res.sendFile(sp, (err) => {
+    if (err && !res.headersSent) res.status(500).json({ error: err.message });
+  });
+});
+
 app.get('/api/video/metadata', async (req, res) => {
   const rawPath = req.query.path;
   const sp = safePath(rawPath);

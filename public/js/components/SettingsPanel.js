@@ -153,7 +153,7 @@ const SettingsPanel = {
             <div class="setting-row">
               <div class="setting-text">
                 <span class="setting-name">Autoplay next video</span>
-                <span class="setting-desc">When a video ends, open the next one in the folder</span>
+                <span class="setting-desc">When a video ends, open the next one in the folder (unless loop is on)</span>
               </div>
               <toggle-switch v-model="s.autoNext"></toggle-switch>
             </div>

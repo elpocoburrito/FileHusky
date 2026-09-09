@@ -12,7 +12,7 @@ const SettingsStore = (function () {
     // Video playback
     autoplay: true,              // start playing when a video is opened
     resumePlayback: true,        // resume where you left off
-    autoNext: false,             // play next video in folder when one ends
+    autoNext: true,              // play next video in folder when one ends
     showTranscodeInfo: true,     // show buffering / transcode progress
     // Browsing
     rememberPath: true,          // reopen the last visited folder
