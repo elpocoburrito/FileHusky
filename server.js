@@ -230,8 +230,15 @@ function buildTranscodeArgs(seg, filePath, decodeArgs, enc) {
   args.push('-c:a', 'aac', '-b:a', '128k');
   if (enc_.format === 'fmp4') {
     // Fragmented MP4 (one fragment file per HLS segment; the moov init part
-    // is served separately as init.mp4 — see _ensureInit)
+    // is served separately as init.mp4 — see _ensureInit).
+    // -bf 0: B-frames would give the first frame a negative DTS, which makes
+    //   the mp4 muxer rebase ALL timestamps to 0 — every segment would then
+    //   claim to start at t=0 and MSE playback shows corrupted blocks.
+    //   With B-frames off and -avoid_negative_ts disabled, -output_ts_offset
+    //   survives into tfdt so segment N starts at N*6s.
     args.push(
+      '-bf', '0',
+      '-avoid_negative_ts', 'disabled',
       '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
       '-f', 'mp4'
     );
@@ -240,6 +247,33 @@ function buildTranscodeArgs(seg, filePath, decodeArgs, enc) {
   }
   args.push('-y', seg.path);
   return args;
+}
+
+/**
+ * Parse ISO-BMFF box structure: returns [{type, start, bodyStart, bodyEnd}]
+ * for the boxes between start and end of the buffer.
+ */
+function walkBoxes(buf, start, end) {
+  const out = [];
+  let off = start;
+  while (off + 8 <= end) {
+    let size = buf.readUInt32BE(off);
+    const type = buf.toString('ascii', off + 4, off + 8);
+    if (size === 1) {
+      // 64-bit size
+      if (off + 16 > end) break;
+      size = Number(buf.readBigUInt64BE(off + 8));
+      if (size < 16) break;
+    } else if (size === 0) {
+      size = end - off; // box extends to end
+    } else if (size < 8) {
+      break;
+    }
+    if (off + size > end) break;
+    out.push({ type, start: off, bodyStart: off + 8, bodyEnd: off + size });
+    off += size;
+  }
+  return out;
 }
 
 function sanitizePath(rawPath) {
@@ -428,6 +462,96 @@ class VideoStream {
   }
 
   /**
+   * fMP4 media segments must start at their first 'moof' box, but ffmpeg with
+   * '+empty_moov' writes a complete ftyp+moov header at the start of every
+   * segment file. Appending those to MSE resets the decoder mid-stream and
+   * corrupts reference frames, so strip the leading header — clients use the
+   * EXT-X-MAP init segment instead.
+   *
+   * Additionally, ffmpeg's mp4 muxer writes tfdt (baseMediaDecodeTime)
+   * relative to the file — every segment would claim to start at t=0 and
+   * each MSE append would overlap the previous one (visible as corrupted
+   * blocks). Rewrite each track's tfdt to the segment's absolute start time,
+   * preserving the internal fragment deltas.
+   */
+  finalizeFmp4Segment(file, startSec) {
+    try {
+      const buf = fs.readFileSync(file);
+      const top = walkBoxes(buf, 0, buf.length);
+
+      // Track map from the embedded moov: track_ID -> timescale
+      const timescales = {};
+      const moov = top.find(b => b.type === 'moov');
+      if (moov) {
+        for (const trak of walkBoxes(buf, moov.bodyStart, moov.bodyEnd)) {
+          if (trak.type !== 'trak') continue;
+          const trakKids = walkBoxes(buf, trak.bodyStart, trak.bodyEnd);
+          const tkhd = trakKids.find(b => b.type === 'tkhd');
+          const mdia = trakKids.find(b => b.type === 'mdia');
+          if (!tkhd || !mdia) continue;
+          const mdhd = walkBoxes(buf, mdia.bodyStart, mdia.bodyEnd).find(b => b.type === 'mdhd');
+          if (!mdhd) continue;
+          // tkhd body: version+flags(4), creation+modification(v0:8 / v1:16), track_ID
+          const trackId = buf.readUInt32BE(tkhd.bodyStart + 4 + (buf[tkhd.bodyStart] === 1 ? 16 : 8));
+          const ver = buf[mdhd.bodyStart];
+          const ts = buf.readUInt32BE(mdhd.bodyStart + 4 + (ver === 1 ? 16 : 8));
+          timescales[trackId] = ts;
+        }
+      }
+
+      // First-pass: collect first tfdt per track
+      const firstTfdt = {};
+      for (const moof of top.filter(b => b.type === 'moof')) {
+        for (const traf of walkBoxes(buf, moof.bodyStart, moof.bodyEnd).filter(b => b.type === 'traf')) {
+          const boxes = walkBoxes(buf, traf.bodyStart, traf.bodyEnd);
+          const tfhd = boxes.find(b => b.type === 'tfhd');
+          const tfdt = boxes.find(b => b.type === 'tfdt');
+          if (!tfhd || !tfdt) continue;
+          const trackId = buf.readUInt32BE(tfhd.bodyStart + 4);
+          if (!(trackId in firstTfdt)) {
+            const ver = buf[tfdt.bodyStart];
+            firstTfdt[trackId] = ver === 1
+              ? Number(buf.readBigUInt64BE(tfdt.bodyStart + 4))
+              : buf.readUInt32BE(tfdt.bodyStart + 4);
+          }
+        }
+      }
+
+      // Second-pass: patch tfdt values (handles version 0 and 1)
+      const firstMoof = top.find(b => b.type === 'moof');
+      for (const moof of top.filter(b => b.type === 'moof')) {
+        for (const traf of walkBoxes(buf, moof.bodyStart, moof.bodyEnd).filter(b => b.type === 'traf')) {
+          const boxes = walkBoxes(buf, traf.bodyStart, traf.bodyEnd);
+          const tfhd = boxes.find(b => b.type === 'tfhd');
+          const tfdt = boxes.find(b => b.type === 'tfdt');
+          if (!tfhd || !tfdt) continue;
+          const trackId = buf.readUInt32BE(tfhd.bodyStart + 4);
+          const ts = timescales[trackId];
+          if (!ts) continue;
+          const ver = buf[tfdt.bodyStart];
+          const cur = ver === 1
+            ? Number(buf.readBigUInt64BE(tfdt.bodyStart + 4))
+            : buf.readUInt32BE(tfdt.bodyStart + 4);
+          const shift = Math.round(startSec * ts) - firstTfdt[trackId];
+          const next = cur + shift;
+          if (ver === 1) {
+            buf.writeBigUInt64BE(BigInt(next), tfdt.bodyStart + 4);
+          } else if (next <= 0xffffffff) {
+            buf.writeUInt32BE(next, tfdt.bodyStart + 4);
+          }
+        }
+      }
+
+      // Trim leading ftyp+moov: media segments start at the first moof
+      if (firstMoof && firstMoof.start > 0) {
+        fs.writeFileSync(file, buf.slice(firstMoof.start));
+      }
+    } catch (e) {
+      console.error('[finalize] failed for ' + file + ':', e.message);
+    }
+  }
+
+  /**
    * fMP4 init segment (codec headers only). Generated by encoding a short
    * probe with identical settings, then truncating the file at its first
    * 'moof' box so only ftyp+moov remain (a pure init segment).
@@ -491,6 +615,7 @@ class VideoStream {
         const ok = (code === 0 && fs.existsSync(seg.path) && fs.statSync(seg.path).size > 0);
         if (ok) {
           seg.cached = true;
+          if (this.encOptions.format === 'fmp4') this.finalizeFmp4Segment(seg.path, seg.startTime);
           const waiters = seg.queue;
           seg.queue = [];
           for (const fn of waiters) fn(true);
