@@ -87,7 +87,13 @@ function parseEncOptions(query) {
   const encoderName = codec === 'hevc' ? 'hevc_nvenc' : ENCODER;
   const speed = SPEED_PRESETS[encoderName] && ['fast', 'balanced', 'best'].includes(query.speed)
     ? query.speed : 'fast';
-  return { codec, resolution, quality, speed, format: codec === 'hevc' ? 'fmp4' : 'ts' };
+  // fMP4 for both codecs. The legacy per-segment MPEG-TS output had AAC
+  // frame-boundary overlaps between consecutive segments (each segment is
+  // encoded independently, so audio snaps to its own frame grid), which
+  // Chrome's MPEG-TS MSE parser rejects as non-monotonic DTS across appends
+  // ("bufferAppendError" during playback). fMP4 with absolute tfdt (rewritten
+  // in finalizeFmp4Segment) appends cleanly.
+  return { codec, resolution, quality, speed, format: 'fmp4' };
 }
 
 function detectHwEncoder() {
@@ -371,7 +377,7 @@ class VideoStream {
     this.id = id;
     this.filePath = filePath;
     this.encOptions = encOptions ||
-      { codec: 'h264', resolution: 0, quality: 23, speed: 'fast', format: 'ts' };
+      { codec: 'h264', resolution: 0, quality: 23, speed: 'fast', format: 'fmp4' };
     this.segments = [];
     this.metadata = null;
     this.cleaned = false;
