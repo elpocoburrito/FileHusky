@@ -378,7 +378,7 @@ class VideoStream {
     this.cacheDir = path.join(CACHE_DIR, id);
     this._pipelineIndex = 0;     // next segment to transcode in background
     this._pipelineActive = false; // whether background pipeline is running
-    this._prioQueue = [];         // segments requested on-demand (seek), process these first
+    this._pipelineTarget = null;  // seek refocus: pipeline jumps here when it can
     this.decodeArgs = [];         // hw decode flags for this stream (set in init)
     this.initPath = path.join(this.cacheDir, 'init.mp4'); // fMP4 init segment
     this._initPromise = null;     // in-flight init generation
@@ -450,6 +450,11 @@ class VideoStream {
   ensureSegment(index) {
     if (index < 0 || index >= this.segments.length) return Promise.resolve(false);
     const seg = this.segments[index];
+    // The player just seeked here — refocus the background pipeline so it
+    // stops grinding old segments and refills from the new position instead
+    if (!seg.cached && !seg.transcoding && Math.abs(index - this._pipelineIndex) > 2) {
+      this._pipelineTarget = index + 3;
+    }
     if (seg.cached) return Promise.resolve(true);
     if (seg.transcoding) {
       // Already being transcoded — queue our callback
@@ -653,6 +658,11 @@ class VideoStream {
   /** Background pipeline: keep transcoding segments ahead of playback */
   async _runPipeline() {
     if (!this._pipelineActive) return;
+    // A seek happened while we were busy — jump to the new playback position
+    if (this._pipelineTarget != null && this._pipelineTarget !== this._pipelineIndex) {
+      this._pipelineIndex = this._pipelineTarget;
+      this._pipelineTarget = null;
+    }
     if (this._pipelineIndex >= this.segments.length) {
       this._pipelineActive = false;
       return;
@@ -776,13 +786,7 @@ app.get('/api/video/stream/start', async (req, res) => {
     const stream = new VideoStream(id, sp, encOptions);
     await stream.init();
     streams.set(id, stream);
-    scheduleStreamCleanup(id);
-    function scheduleStreamCleanup(streamId) {
-      stream.cleanupTimer = setTimeout(() => {
-        const s = streams.get(streamId);
-        if (s) { s.cleanup(); streams.delete(streamId); }
-      }, 5 * 60 * 1000);
-    }
+    touchStream(id);
     res.json({
       streamId: id,
       duration: stream.metadata.duration,
@@ -798,9 +802,21 @@ app.get('/api/video/stream/start', async (req, res) => {
   }
 });
 
+/** Reset the idle-expiry timer for a stream session (client is active). */
+function touchStream(streamId) {
+  const s = streams.get(streamId);
+  if (!s) return;
+  clearTimeout(s.cleanupTimer);
+  s.cleanupTimer = setTimeout(() => {
+    const cur = streams.get(streamId);
+    if (cur) { cur.cleanup(); streams.delete(streamId); }
+  }, 5 * 60 * 1000);
+}
+
 app.get('/api/video/stream/:id/playlist.m3u8', (req, res) => {
   const stream = streams.get(req.params.id);
   if (!stream) return res.status(404).json({ error: 'Stream not found' });
+  touchStream(req.params.id);
   const playlist = stream.getPlaylist();
   if (!playlist) return res.status(500).json({ error: 'Failed to generate playlist' });
   res.set({
@@ -830,6 +846,7 @@ app.get('/api/video/stream/:id/init.mp4', async (req, res) => {
 async function serveSegment(req, res) {
   const stream = streams.get(req.params.id);
   if (!stream) return res.status(404).json({ error: 'Stream not found' });
+  touchStream(req.params.id); // client is actively fetching — keep session alive
   const index = parseInt(req.params.index);
   if (isNaN(index)) return res.status(400).json({ error: 'Invalid segment index' });
   const ok = await stream.ensureSegment(index);
@@ -849,12 +866,7 @@ async function serveSegment(req, res) {
 app.get('/api/video/stream/:id/status', (req, res) => {
   const stream = streams.get(req.params.id);
   if (!stream) return res.status(404).json({ error: 'Stream not found' });
-  // Client is still polling — keep the session alive
-  clearTimeout(stream.cleanupTimer);
-  stream.cleanupTimer = setTimeout(() => {
-    const s = streams.get(req.params.id);
-    if (s) { s.cleanup(); streams.delete(req.params.id); }
-  }, 5 * 60 * 1000);
+  touchStream(req.params.id);
   let cachedCount = 0;
   for (let i = 0; i < stream.segments.length; i++) {
     if (stream.segments[i].cached) cachedCount++;

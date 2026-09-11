@@ -288,16 +288,43 @@ const VideoPlayer = {
           backBufferLength: 30,
           maxBufferLength: 40,
           maxMaxBufferLength: 60,
+          // Segments are transcoded on demand — a seek to an uncached
+          // position can take several seconds, so wait patiently instead
+          // of failing fast
+          fragLoadingTimeOut: 60000,
+          fragLoadingMaxRetry: 10,
+          fragLoadingRetryDelay: 500,
+          fragLoadingMaxRetryTimeout: 16000,
+          manifestLoadingTimeOut: 30000,
+          manifestLoadingMaxRetry: 4,
+          levelLoadingTimeOut: 30000,
+          levelLoadingMaxRetry: 6,
         });
         this.hls.loadSource(this.stream.playlistUrl);
         this.hls.attachMedia(player);
         this.hls.on(Hls.Events.ERROR, (event, data) => {
-          if (data.fatal) {
-            this.phase = 'error';
-            this.errorMsg = 'Playback error: ' + (data.details || data.type || 'unknown') +
-              '. The transcode session may have expired.';
-            this.cleanup();
+          if (!data.fatal) return;
+          // Recoverable failures (e.g. seeked into an un-transcoded position,
+          // or the transcode session expired): restart the stream seamlessly
+          // at the current position instead of killing playback.
+          this._recoveries = (this._recoveries || 0) + 1;
+          if (data.type === Hls.ErrorTypes.MEDIA_ERROR && this._recoveries <= 2) {
+            this.hls.recoverMediaError();
+            return;
           }
+          if (this._recoveries <= 3) {
+            const player = this.$refs.video;
+            this.pendingSeek = (player && player.currentTime) ? player.currentTime : 0;
+            this.statusText = 'Recovering…';
+            // Deferred: destroying hls.js from inside its own error callback
+            // can re-enter the handler
+            setTimeout(() => this.start(), 50);
+            return;
+          }
+          this.phase = 'error';
+          this.errorMsg = 'Playback error: ' + (data.details || data.type || 'unknown') +
+            '. The transcode session may have expired.';
+          this.cleanup();
         });
       } else if (player.canPlayType('application/vnd.apple.mpegurl')) {
         // Native HLS (Safari / iOS)
@@ -315,8 +342,19 @@ const VideoPlayer = {
       player.addEventListener('play', this.onPlayPauseUi);
       player.addEventListener('pause', this.onPlayPauseUi);
       player.addEventListener('volumechange', this.onVolumeUi);
+      player.addEventListener('timeupdate', this.onTimeUi);
+      player.addEventListener('play', this.onPlayPauseUi);
+      player.addEventListener('pause', this.onPlayPauseUi);
+      player.addEventListener('volumechange', this.onVolumeUi);
       player.addEventListener('progress', this.onBufferUi);
+      player.addEventListener('playing', this.onPlayingUi);
       this.muted = player.muted;
+    },
+
+    /** Healthy playback for 10s clears the error-recovery budget */
+    onPlayingUi() {
+      clearTimeout(this._recoverResetTimer);
+      this._recoverResetTimer = setTimeout(() => { this._recoveries = 0; }, 10000);
     },
 
     /** Apply a quality/speed/resolution change: seamless restart at position */
@@ -437,6 +475,8 @@ const VideoPlayer = {
         player.removeEventListener('pause', this.onPlayPauseUi);
         player.removeEventListener('volumechange', this.onVolumeUi);
         player.removeEventListener('progress', this.onBufferUi);
+        player.removeEventListener('playing', this.onPlayingUi);
+        clearTimeout(this._recoverResetTimer);
         player.pause();
         player.removeAttribute('src');
         player.load();
