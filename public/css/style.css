@@ -927,6 +927,49 @@ button {
 
 .info-config { font-weight: 600; color: var(--accent) !important; }
 
+/* Save menu (right-click / long-press) */
+.save-menu {
+  position: absolute;
+  z-index: 15;
+  min-width: 230px;
+  padding: 6px;
+  border-radius: 14px;
+  background: rgba(20, 22, 26, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  color: #fff;
+}
+
+.save-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 46px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  color: #e8eaed;
+  font-size: 0.92rem;
+  font-weight: 600;
+  text-align: left;
+  transition: background 0.12s;
+}
+
+.save-item:hover { background: rgba(255, 255, 255, 0.12); }
+.save-item:active { background: rgba(255, 255, 255, 0.22); }
+
+.save-item-sub {
+  margin-left: auto;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: #9aa0a6;
+}
+
+/* Hide the mouse cursor along with the controls (desktop idle) */
+.vc-hide-cursor,
+.vc-hide-cursor video,
+.vc-hide-cursor .vcontrols { cursor: none; }
+
 /* ═══ External player modal ═══════════════════════════════════════════ */
 
 .modal-root {

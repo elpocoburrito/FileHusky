@@ -54,6 +54,10 @@ const VideoPlayer = {
       loopOn: false,
       controlsVisible: true,
       hideTimer: null,
+      lastPointerType: 'mouse',
+      saveOpen: false,
+      saveX: 0,
+      saveY: 0,
       currentTime: 0,
       bufferedPercent: 0,
       scrubbing: false,
@@ -128,6 +132,10 @@ const VideoPlayer = {
       // 'Original' + browser-compatible file → stream the file directly,
       // no transcoding. Falls back to transcode for incompatible files.
       return this.s.videoResolution === 'orig' && this.canDirectPlay;
+    },
+
+    fmtSaveSize() {
+      return (this.meta && this.meta.size) ? Utils.formatSize(this.meta.size) : '';
     },
 
     activeConfig() {
@@ -586,9 +594,54 @@ const VideoPlayer = {
 
     onVideoClick() {
       this.qualityOpen = false;
-      this.controlsVisible = !this.controlsVisible;
-      if (this.controlsVisible) this.scheduleHide();
-      else this.clearHideTimer();
+      this.saveOpen = false;
+      // Touch: tap toggles the control bar. Mouse/keyboard: click toggles
+      // play/pause (desktop convention) — controls follow the mouse instead.
+      const isMouse = this.lastPointerType === 'mouse';
+      if (isMouse) {
+        this.togglePlay();
+      } else {
+        this.controlsVisible = !this.controlsVisible;
+        if (this.controlsVisible) this.scheduleHide();
+        else this.clearHideTimer();
+      }
+    },
+
+    /** Mouse moved over the player — reveal controls (desktop) */
+    onPointerMove(e) {
+      if (e.pointerType && e.pointerType !== 'mouse') return;
+      this.lastPointerType = 'mouse';
+      if (this.phase === 'ready') this.showControls();
+    },
+
+    /** Mouse left the player — hide sooner than the touch idle timer */
+    onMouseLeave() {
+      if (!this.isPlaying) return; // paused keeps controls visible anyway
+      this.clearHideTimer();
+      this.hideTimer = setTimeout(() => { this.controlsVisible = false; }, 800);
+    },
+
+    /** Right-click / long-press inside the player: offer saving the file */
+    onContextMenu(e) {
+      if (this.phase !== 'ready') return;
+      e.preventDefault();
+      this.qualityOpen = false;
+      const rect = this.$refs.videoArea.getBoundingClientRect();
+      this.saveX = Math.max(8, Math.min(e.clientX - rect.left, rect.width - 250));
+      this.saveY = Math.max(8, e.clientY - rect.top);
+      this.saveOpen = true;
+      this.showControls();
+    },
+
+    /** Download the original file via the existing raw endpoint (no re-encode) */
+    doSaveVideo() {
+      const a = document.createElement('a');
+      a.href = this.rawUrl;
+      a.download = this.displayName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      this.saveOpen = false;
     },
 
     showControls() {
@@ -625,6 +678,7 @@ const VideoPlayer = {
         case 'Escape':
           if (this.externalOpen) this.externalOpen = false;
           if (this.qualityOpen) this.qualityOpen = false;
+          if (this.saveOpen) this.saveOpen = false;
           break;
       }
     },
@@ -659,8 +713,12 @@ const VideoPlayer = {
     </header>
 
     <!-- ── Sticky video area ─────────────────────────────────────────── -->
-    <div class="video-area" ref="videoArea">
-      <video ref="video" class="video-el" playsinline preload="auto" @click="onVideoClick"></video>
+    <div class="video-area" ref="videoArea"
+         @mousemove="onPointerMove" @pointerdown="onPointerMove"
+         @mouseleave="onMouseLeave"
+         :class="{ 'vc-hide-cursor': !controlsVisible }">
+      <video ref="video" class="video-el" playsinline preload="auto"
+             @click="onVideoClick" @contextmenu="onContextMenu"></video>
 
       <div v-if="phase === 'loading'" class="video-overlay">
         <div class="spinner"></div>
@@ -672,6 +730,21 @@ const VideoPlayer = {
         <p>{{ errorMsg }}</p>
         <button class="btn primary" @click="restart">
           <ui-icon name="restart" :size="20"></ui-icon> Restart playback
+        </button>
+      </div>
+
+      <!-- ── Save menu (right-click / long-press) ─────────────────── -->
+      <div v-if="saveOpen" class="save-menu"
+           :style="{ left: saveX + 'px', top: saveY + 'px' }"
+           @click.stop @contextmenu.prevent.stop>
+        <button class="save-item" @click="doSaveVideo">
+          <ui-icon name="download" :size="20"></ui-icon>
+          <span>Save video</span>
+          <span class="save-item-sub">original · {{ fmtSaveSize }}</span>
+        </button>
+        <button class="save-item" @click="saveOpen = false">
+          <ui-icon name="close" :size="18"></ui-icon>
+          <span>Cancel</span>
         </button>
       </div>
 
