@@ -941,6 +941,107 @@ button {
 
 .info-config { font-weight: 600; color: var(--accent) !important; }
 
+/* Center feedback: play/pause icon burst */
+.center-icon {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  pointer-events: none;
+}
+
+.center-pop-enter-active {
+  animation: center-pop 0.65s ease forwards;
+}
+.center-pop-leave-active { display: none; }
+
+@keyframes center-pop {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(0.6); }
+  25% { opacity: 1; transform: translate(-50%, -50%) scale(1.08); }
+  60% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  100% { opacity: 0; transform: translate(-50%, -50%) scale(1.2); }
+}
+
+.center-icon .ui-icon {
+  transform: translate(-50%, -50%);
+  position: absolute;
+  top: 50%;
+  left: 50%;
+}
+
+/* Volume % HUD */
+.vol-hud {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font-size: 0.95rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+/* Volume slider: expands from the mute button on hover/interaction */
+.vc-vol {
+  display: flex;
+  align-items: center;
+}
+
+.vc-vol-slider {
+  width: 0;
+  opacity: 0;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.35);
+  outline: none;
+  transition: width 0.2s ease, opacity 0.2s ease, margin 0.2s ease;
+  margin-right: 0;
+  touch-action: none;
+}
+
+.vc-vol:hover .vc-vol-slider,
+.vc-vol-slider:focus-visible {
+  width: 76px;
+  opacity: 1;
+  margin-right: 6px;
+}
+
+.vc-vol-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #fff;
+  border: none;
+}
+
+.vc-vol-slider::-moz-range-thumb {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #fff;
+  border: none;
+}
+
 /* Hide the mouse cursor along with the controls (desktop idle) */
 .vc-hide-cursor,
 .vc-hide-cursor video,

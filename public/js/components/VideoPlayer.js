@@ -51,6 +51,11 @@ const VideoPlayer = {
       // ── UI-only state (custom control bar) — does not affect playback ──
       isPlaying: false,
       muted: false,
+      playerVolume: 1,
+      volHud: false,
+      volHudTimer: null,
+      centerIcon: null,
+      centerIconTimer: null,
       loopOn: false,
       controlsVisible: true,
       hideTimer: null,
@@ -439,7 +444,9 @@ const VideoPlayer = {
 
     openVideo(item) {
       this.savePosition();
-      this.$router.push({
+      // Replace (not push) so watching N videos doesn't stack N history
+      // entries — the back button should always return to the file browser
+      this.$router.replace({
         name: 'video',
         path: item.path,
         fileName: item.name,
@@ -513,6 +520,7 @@ const VideoPlayer = {
       const player = this.$refs.video;
       if (!player) return;
       this.muted = player.muted || player.volume === 0;
+      this.playerVolume = player.volume;
     },
 
     onBufferUi() {
@@ -530,14 +538,42 @@ const VideoPlayer = {
     togglePlay() {
       const player = this.$refs.video;
       if (!player) return;
-      if (player.paused) player.play().catch(() => {});
+      const wasPaused = player.paused;
+      if (wasPaused) player.play().catch(() => {});
       else player.pause();
+      this.pulseCenterIcon(wasPaused ? 'play' : 'pause');
+    },
+
+    /** Brief centered play/pause icon burst (user-initiated toggles) */
+    pulseCenterIcon(icon) {
+      this.centerIcon = icon;
+      clearTimeout(this.centerIconTimer);
+      this.centerIconTimer = setTimeout(() => { this.centerIcon = null; }, 650);
     },
 
     toggleMute() {
       const player = this.$refs.video;
       if (!player) return;
       player.muted = !player.muted;
+    },
+
+    /** Volume slider (hover bar next to the mute button) */
+    onVolSlider(e) {
+      const player = this.$refs.video;
+      if (!player) return;
+      const v = parseFloat(e.target.value);
+      player.volume = v;
+      if (player.muted && v > 0) player.muted = false;
+      this.showVolHud();
+    },
+
+    volStyle() {
+      const pct = this.muted ? 0 : this.playerVolume * 100;
+      return {
+        background: 'linear-gradient(to right,' +
+          ' var(--accent) 0%, var(--accent) ' + pct + '%,' +
+          ' rgba(255,255,255,.35) ' + pct + '%, rgba(255,255,255,.35) 100%)',
+      };
     },
 
     toggleLoop() {
@@ -634,7 +670,7 @@ const VideoPlayer = {
       a.remove();
     },
 
-    /** Mouse scroll wheel over the player: adjust volume */
+    /** Mouse scroll wheel over the player: adjust volume, show a % HUD */
     onWheel(e) {
       if (this.phase !== 'ready') return;
       const player = this.$refs.video;
@@ -643,7 +679,15 @@ const VideoPlayer = {
       const next = Math.min(1, Math.max(0, player.volume + step));
       player.volume = next;
       if (player.muted && (next > 0 || step > 0)) player.muted = false;
+      this.showVolHud();
       this.showControls();
+    },
+
+    /** Flash the volume % readout while the volume is being changed */
+    showVolHud() {
+      this.volHud = true;
+      clearTimeout(this.volHudTimer);
+      this.volHudTimer = setTimeout(() => { this.volHud = false; }, 900);
     },
 
     showControls() {
@@ -721,6 +765,21 @@ const VideoPlayer = {
       <video ref="video" class="video-el" playsinline preload="auto"
              @click="onVideoClick" @dblclick="onVideoDblClick"></video>
 
+      <!-- ── Center feedback: play/pause burst ───────────────────── -->
+      <transition name="center-pop">
+        <div v-if="centerIcon" class="center-icon" :key="centerIcon">
+          <ui-icon :name="centerIcon" :size="76"></ui-icon>
+        </div>
+      </transition>
+
+      <!-- ── Volume % HUD (scrollwheel / slider) ─────────────────── -->
+      <transition name="center-pop">
+        <div v-if="volHud" class="vol-hud">
+          <ui-icon :name="muted || playerVolume === 0 ? 'volumeOff' : 'volumeUp'" :size="22"></ui-icon>
+          <span>{{ Math.round((muted ? 0 : playerVolume) * 100) }}%</span>
+        </div>
+      </transition>
+
       <div v-if="phase === 'loading'" class="video-overlay">
         <div class="spinner"></div>
         <p>{{ statusText }}</p>
@@ -757,9 +816,14 @@ const VideoPlayer = {
             <button class="vc-btn" :disabled="!nextVideo" @click="goNext" title="Next video">
               <ui-icon name="skipNext" :size="26"></ui-icon>
             </button>
-            <button class="vc-btn" @click="toggleMute" :title="muted ? 'Unmute' : 'Mute'">
-              <ui-icon :name="muted ? 'volumeOff' : 'volumeUp'" :size="26"></ui-icon>
-            </button>
+            <div class="vc-vol">
+              <input class="vc-vol-slider" type="range" min="0" max="1" step="0.01"
+                     :value="muted ? 0 : playerVolume" :style="volStyle()"
+                     @input="onVolSlider" aria-label="Volume">
+              <button class="vc-btn" @click="toggleMute" :title="muted ? 'Unmute' : 'Mute'">
+                <ui-icon :name="muted ? 'volumeOff' : 'volumeUp'" :size="26"></ui-icon>
+              </button>
+            </div>
           </div>
 
           <div class="vc-group">
