@@ -282,6 +282,28 @@ function walkBoxes(buf, start, end) {
   return out;
 }
 
+// ─── Host filesystem mapping (Docker) ───────────────────────────────
+// When the server runs in a container, the host filesystem is mounted at
+// HOST_ROOT (e.g. /host) because mounting it over the container's own /
+// would hide node/ffmpeg. With HOST_ROOT set, all client-facing paths stay
+// exactly as on the host ('/media/movies/…') and are transparently mapped
+// to /host/media/movies for filesystem access.
+const HOST_ROOT = process.env.HOST_ROOT || '';
+
+/** Client-facing path -> real filesystem path */
+function toHostPath(p) {
+  if (!HOST_ROOT) return p;
+  return path.join(HOST_ROOT, p || '/');
+}
+
+/** Filesystem path -> client-facing path (strip the mount prefix) */
+function fromHostPath(p) {
+  if (!HOST_ROOT) return p;
+  if (p === HOST_ROOT) return '/';
+  if (p.startsWith(HOST_ROOT + '/')) return p.slice(HOST_ROOT.length);
+  return p;
+}
+
 function sanitizePath(rawPath) {
   try {
     return path.resolve(path.normalize(rawPath || ''));
@@ -291,8 +313,19 @@ function sanitizePath(rawPath) {
 }
 
 function safePath(rawPath) {
-  const sp = sanitizePath(rawPath);
-  if (!sp || !fs.existsSync(sp)) return null;
+  let sp;
+  try {
+    sp = path.resolve(path.normalize(rawPath || ''));
+  } catch (_) {
+    return null;
+  }
+  if (HOST_ROOT) {
+    // Map onto the mounted host filesystem and refuse any traversal that
+    // would escape it (e.g. /host/../)
+    sp = path.resolve(HOST_ROOT, '.' + path.sep + sp.replace(/^([a-zA-Z]:)?[\\/]+/, ''));
+    if (sp !== HOST_ROOT && !sp.startsWith(HOST_ROOT + path.sep)) return null;
+  }
+  if (!fs.existsSync(sp)) return null;
   return sp;
 }
 
@@ -707,15 +740,16 @@ app.get('/api/drives', (req, res) => {
     }
     return res.json(drives);
   } else {
-    const roots = ['/'];
+    const roots = [fromHostPath(HOST_ROOT || '/')];
     for (const dir of ['/mnt', '/media']) {
+      const hostDir = toHostPath(dir);
       try {
-        if (fs.existsSync(dir)) {
-          const items = fs.readdirSync(dir);
+        if (fs.existsSync(hostDir)) {
+          const items = fs.readdirSync(hostDir);
           for (const item of items) {
             const p = path.join(dir, item);
             try {
-              if (fs.statSync(p).isDirectory()) roots.push(p);
+              if (fs.statSync(toHostPath(p)).isDirectory()) roots.push(p);
             } catch (_) {}
           }
         }
@@ -740,7 +774,7 @@ app.get('/api/browse', (req, res) => {
       try { stat = fs.statSync(fullPath); } catch (_) { continue; }
       result.push({
         name: dirent.name,
-        path: fullPath,
+        path: fromHostPath(fullPath),
         isDirectory: dirent.isDirectory(),
         isVideo: isVideo(dirent.name),
         isImage: isImage(dirent.name),
@@ -753,7 +787,12 @@ app.get('/api/browse', (req, res) => {
       if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
       return a.name.toLowerCase().localeCompare(b.name.toLowerCase());
     });
-    res.json({ path: sp, parent: path.dirname(sp), contents: result });
+    // Parent: never go above the mount root when HOST_ROOT is set
+    const dirHost = path.dirname(sp);
+    const parent = (HOST_ROOT && dirHost !== HOST_ROOT && !dirHost.startsWith(HOST_ROOT + path.sep))
+      ? fromHostPath(HOST_ROOT)
+      : fromHostPath(dirHost);
+    res.json({ path: fromHostPath(sp), parent, contents: result });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -887,6 +926,7 @@ app.get('/api/video/stream/:id/status', (req, res) => {
 
 app.listen(PORT, () => {
   console.log('Server running on http://localhost:' + PORT);
+  if (HOST_ROOT) console.log('Serving host filesystem from: ' + HOST_ROOT + ' (paths shown without the prefix)');
   if (!FFMPEG) console.log('WARNING: ffmpeg not found. Install ffmpeg for video transcoding.');
   if (!FFPROBE) console.log('WARNING: ffprobe not found. Install ffmpeg for video metadata.');
 });

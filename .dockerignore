@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Git
+.git/
+.gitignore
+
+# Docker files themselves
+Dockerfile
+docker-compose.yml
+
+# Docs / misc
+*.md
+.dockerignore
+
+# Large test media (keep local only)
+test.mp4
+
+# Runtime artifacts
+*.log
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db

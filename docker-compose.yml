@@ -1,0 +1,41 @@
+# SrvFiles — file browser with on-demand video transcoding
+#
+# Serves the WHOLE host filesystem: "/" is mounted into the container at
+# /host and the server maps paths transparently, so the UI shows host
+# paths exactly as they are on the machine (e.g. /media/movies).
+#
+# GPU transcoding (NVENC/NVDEC): requires the NVIDIA container toolkit
+# (https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/).
+# On hosts without an NVIDIA GPU, remove the `gpus` reservation below —
+# the server falls back to software transcoding either way.
+
+services:
+  srvfiles:
+    build: .
+    container_name: srvfiles
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      # Where the host filesystem is mounted inside the container
+      HOST_ROOT: /host
+    volumes:
+      # Whole host filesystem (mount read-only if you prefer: /:/host:ro)
+      # NOTE: this includes /var/run/docker.sock under /host — treat the
+      # container as trusted (or mount read-only) if that is a concern.
+      - /:/host
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/drives').then(r => { if (!r.ok) process.exit(1); }).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    # GPU passthrough for hardware transcoding (NVENC/NVDEC).
+    # Comment out these lines on hosts without an NVIDIA GPU.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
