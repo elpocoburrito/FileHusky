@@ -55,9 +55,6 @@ const VideoPlayer = {
       controlsVisible: true,
       hideTimer: null,
       lastPointerType: 'mouse',
-      saveOpen: false,
-      saveX: 0,
-      saveY: 0,
       currentTime: 0,
       bufferedPercent: 0,
       scrubbing: false,
@@ -132,10 +129,6 @@ const VideoPlayer = {
       // 'Original' + browser-compatible file → stream the file directly,
       // no transcoding. Falls back to transcode for incompatible files.
       return this.s.videoResolution === 'orig' && this.canDirectPlay;
-    },
-
-    fmtSaveSize() {
-      return (this.meta && this.meta.size) ? Utils.formatSize(this.meta.size) : '';
     },
 
     activeConfig() {
@@ -594,17 +587,27 @@ const VideoPlayer = {
 
     onVideoClick() {
       this.qualityOpen = false;
-      this.saveOpen = false;
       // Touch: tap toggles the control bar. Mouse/keyboard: click toggles
-      // play/pause (desktop convention) — controls follow the mouse instead.
-      const isMouse = this.lastPointerType === 'mouse';
-      if (isMouse) {
-        this.togglePlay();
+      // play/pause (desktop convention) — but wait briefly so a double-click
+      // can toggle fullscreen instead (the pending toggle is cancelled).
+      if (this.lastPointerType === 'mouse') {
+        if (this._clickTimer) return; // second click — the dblclick handler takes over
+        this._clickTimer = setTimeout(() => {
+          this._clickTimer = null;
+          this.togglePlay();
+        }, 260);
       } else {
         this.controlsVisible = !this.controlsVisible;
         if (this.controlsVisible) this.scheduleHide();
         else this.clearHideTimer();
       }
+    },
+
+    /** Mouse double-click on the video: enter/exit fullscreen */
+    onVideoDblClick() {
+      if (this.lastPointerType !== 'mouse') return;
+      if (this._clickTimer) { clearTimeout(this._clickTimer); this._clickTimer = null; }
+      this.toggleFullscreen();
     },
 
     /** Mouse moved over the player — reveal controls (desktop) */
@@ -621,18 +624,6 @@ const VideoPlayer = {
       this.hideTimer = setTimeout(() => { this.controlsVisible = false; }, 800);
     },
 
-    /** Right-click / long-press inside the player: offer saving the file */
-    onContextMenu(e) {
-      if (this.phase !== 'ready') return;
-      e.preventDefault();
-      this.qualityOpen = false;
-      const rect = this.$refs.videoArea.getBoundingClientRect();
-      this.saveX = Math.max(8, Math.min(e.clientX - rect.left, rect.width - 250));
-      this.saveY = Math.max(8, e.clientY - rect.top);
-      this.saveOpen = true;
-      this.showControls();
-    },
-
     /** Download the original file via the existing raw endpoint (no re-encode) */
     doSaveVideo() {
       const a = document.createElement('a');
@@ -641,7 +632,18 @@ const VideoPlayer = {
       document.body.appendChild(a);
       a.click();
       a.remove();
-      this.saveOpen = false;
+    },
+
+    /** Mouse scroll wheel over the player: adjust volume */
+    onWheel(e) {
+      if (this.phase !== 'ready') return;
+      const player = this.$refs.video;
+      if (!player) return;
+      const step = e.deltaY < 0 ? 0.05 : -0.05;
+      const next = Math.min(1, Math.max(0, player.volume + step));
+      player.volume = next;
+      if (player.muted && (next > 0 || step > 0)) player.muted = false;
+      this.showControls();
     },
 
     showControls() {
@@ -678,7 +680,6 @@ const VideoPlayer = {
         case 'Escape':
           if (this.externalOpen) this.externalOpen = false;
           if (this.qualityOpen) this.qualityOpen = false;
-          if (this.saveOpen) this.saveOpen = false;
           break;
       }
     },
@@ -715,10 +716,10 @@ const VideoPlayer = {
     <!-- ── Sticky video area ─────────────────────────────────────────── -->
     <div class="video-area" ref="videoArea"
          @mousemove="onPointerMove" @pointerdown="onPointerMove"
-         @mouseleave="onMouseLeave"
+         @mouseleave="onMouseLeave" @wheel.prevent="onWheel"
          :class="{ 'vc-hide-cursor': !controlsVisible }">
       <video ref="video" class="video-el" playsinline preload="auto"
-             @click="onVideoClick" @contextmenu="onContextMenu"></video>
+             @click="onVideoClick" @dblclick="onVideoDblClick"></video>
 
       <div v-if="phase === 'loading'" class="video-overlay">
         <div class="spinner"></div>
@@ -733,54 +734,9 @@ const VideoPlayer = {
         </button>
       </div>
 
-      <!-- ── Save menu (right-click / long-press) ─────────────────── -->
-      <div v-if="saveOpen" class="save-menu"
-           :style="{ left: saveX + 'px', top: saveY + 'px' }"
-           @click.stop @contextmenu.prevent.stop>
-        <button class="save-item" @click="doSaveVideo">
-          <ui-icon name="download" :size="20"></ui-icon>
-          <span>Save video</span>
-          <span class="save-item-sub">original · {{ fmtSaveSize }}</span>
-        </button>
-        <button class="save-item" @click="saveOpen = false">
-          <ui-icon name="close" :size="18"></ui-icon>
-          <span>Cancel</span>
-        </button>
-      </div>
-
-      <!-- ── Custom control bar (UI only) ──────────────────────────── -->
+      <!-- ── Custom control bar (UI only) ──────────────────────── -->
       <div v-show="phase === 'ready'" class="vcontrols"
            :class="{ 'vcontrols-hidden': !controlsVisible }" @click.stop>
-
-        <!-- Quality menu popover -->
-        <div v-if="qualityOpen" class="vc-quality" @click.stop>
-          <div class="vq-group">
-            <div class="vq-title">Resolution</div>
-            <button v-for="opt in resolutionOptions" :key="opt.value"
-                    class="vq-option" :class="{ 'vq-on': s.videoResolution === opt.value }"
-                    @click="setQuality('videoResolution', opt.value)">{{ opt.label }}</button>
-          </div>
-          <div class="vq-group">
-            <div class="vq-title">Quality</div>
-            <button v-for="opt in qualityOptions" :key="opt.value"
-                    class="vq-option" :class="{ 'vq-on': s.videoQuality === opt.value }"
-                    @click="setQuality('videoQuality', opt.value)">{{ opt.label }}</button>
-          </div>
-          <div class="vq-group">
-            <div class="vq-title">Encoding speed</div>
-            <button v-for="opt in speedOptions" :key="opt.value"
-                    class="vq-option" :class="{ 'vq-on': s.encodeSpeed === opt.value }"
-                    @click="setQuality('encodeSpeed', opt.value)">{{ opt.label }}</button>
-          </div>
-          <div class="vq-group">
-            <div class="vq-title">Codec</div>
-            <button v-for="opt in codecOptions" :key="opt.value"
-                    class="vq-option" :class="{ 'vq-on': s.videoCodec === opt.value }"
-                    :disabled="opt.value === 'hevc' && !hevcSupported"
-                    @click="setQuality('videoCodec', opt.value)">{{ opt.label }}</button>
-          </div>
-          <p class="vq-note">Slower encoding = smaller files at the same quality, but uses more CPU/GPU. HEVC plays only on devices with hardware HEVC decoding — Auto picks it only when supported.</p>
-        </div>
 
         <div class="vc-seek-row">
           <span class="vc-time">{{ fmt(currentTime) }}</span>
@@ -807,6 +763,9 @@ const VideoPlayer = {
           </div>
 
           <div class="vc-group">
+            <button class="vc-btn" @click="doSaveVideo" title="Save video (original file)">
+              <ui-icon name="download" :size="24"></ui-icon>
+            </button>
             <button class="vc-btn" @click="qualityOpen = !qualityOpen" title="Playback quality">
               <ui-icon name="tune" :size="24"></ui-icon>
             </button>
@@ -822,6 +781,37 @@ const VideoPlayer = {
             </button>
           </div>
         </div>
+      </div>
+
+      <!-- ── Quality menu (fixed, opens from the control bar, scrollable) -->
+      <div v-if="qualityOpen" class="quality-backdrop" @click="qualityOpen = false"></div>
+      <div v-if="qualityOpen" class="vc-quality">
+        <div class="vq-group">
+          <div class="vq-title">Resolution</div>
+          <button v-for="opt in resolutionOptions" :key="opt.value"
+                  class="vq-option" :class="{ 'vq-on': s.videoResolution === opt.value }"
+                  @click="setQuality('videoResolution', opt.value)">{{ opt.label }}</button>
+        </div>
+        <div class="vq-group">
+          <div class="vq-title">Quality</div>
+          <button v-for="opt in qualityOptions" :key="opt.value"
+                  class="vq-option" :class="{ 'vq-on': s.videoQuality === opt.value }"
+                  @click="setQuality('videoQuality', opt.value)">{{ opt.label }}</button>
+        </div>
+        <div class="vq-group">
+          <div class="vq-title">Encoding speed</div>
+          <button v-for="opt in speedOptions" :key="opt.value"
+                  class="vq-option" :class="{ 'vq-on': s.encodeSpeed === opt.value }"
+                  @click="setQuality('encodeSpeed', opt.value)">{{ opt.label }}</button>
+        </div>
+        <div class="vq-group">
+          <div class="vq-title">Codec</div>
+          <button v-for="opt in codecOptions" :key="opt.value"
+                  class="vq-option" :class="{ 'vq-on': s.videoCodec === opt.value }"
+                  :disabled="opt.value === 'hevc' && !hevcSupported"
+                  @click="setQuality('videoCodec', opt.value)">{{ opt.label }}</button>
+        </div>
+        <p class="vq-note">Slower encoding = smaller files at the same quality, but uses more CPU/GPU. HEVC plays only on devices with hardware HEVC decoding — Auto picks it only when supported.</p>
       </div>
     </div>
 
