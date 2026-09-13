@@ -4,6 +4,7 @@ node_modules/
 # Runtime / cache
 *.log
 tmp/
+data/
 
 # Large test media (keep local only)
 test.mp4

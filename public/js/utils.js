@@ -1,9 +1,15 @@
 /* ─── SrvFiles utils ────────────────────────────────────────────────────── */
 
 const Utils = {
-  /** Fetch JSON, throw readable errors */
-  async api(url) {
-    const res = await fetch(url);
+  /** Fetch JSON, throw readable errors. opts: { method, body } (body → JSON) */
+  async api(url, opts) {
+    opts = opts || {};
+    const init = { method: opts.method || 'GET' };
+    if (opts.body !== undefined) {
+      init.headers = { 'Content-Type': 'application/json' };
+      init.body = JSON.stringify(opts.body);
+    }
+    const res = await fetch(url, init);
     if (!res.ok) {
       let msg;
       try { msg = (await res.json()).error; } catch (_) { msg = res.statusText; }

@@ -1,6 +1,6 @@
 /* ─── App root: registration, hash router, theme ──────────────────────────── */
 
-/* global Vue, UiIcon, SettingsStore, FileManager, VideoPlayer, SettingsPanel, ToggleSwitch */
+/* global Vue, UiIcon, SettingsStore, FileManager, VideoPlayer, SettingsPanel, TagManager, TagPanel, ToggleSwitch */
 
 (function () {
   'use strict';
@@ -30,6 +30,7 @@
         folder: params.get('folder') || '',
       };
     }
+    return { name: 'tags' };
     return { name: 'browse', path: params.get('path') || null };
   }
 
@@ -41,6 +42,7 @@
   };
 
   function toHash(to) {
+    if (to.name === 'tags') return '#/tags';
     if (to.name === 'video') {
       const p = new URLSearchParams();
       p.set('path', to.path);
@@ -108,6 +110,8 @@
   app.component('file-manager', FileManager);
   app.component('video-player', VideoPlayer);
   app.component('settings-panel', SettingsPanel);
+  app.component('tag-manager', TagManager);
+  app.component('tag-panel', TagPanel);
 
   app.mount('#app');
 })();

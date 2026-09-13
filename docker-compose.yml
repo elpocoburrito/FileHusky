@@ -24,6 +24,8 @@ services:
       # NOTE: this includes /var/run/docker.sock under /host — treat the
       # container as trusted (or mount read-only) if that is a concern.
       - /:/host
+      # Video tags + ratings database (SQLite), survives rebuilds/upgrades
+      - srvfiles-data:/app/data
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/drives').then(r => { if (!r.ok) process.exit(1); }).catch(() => process.exit(1))"]
       interval: 30s
@@ -39,3 +41,6 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+
+volumes:
+  srvfiles-data:

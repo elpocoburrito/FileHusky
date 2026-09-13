@@ -21,6 +21,12 @@ segment is transcoded when you reach it.
   (space, ←/→, M, F, L, N, P)
 - Save the original file to disk, open it in an external player (VLC,
   nPlayer, …) or copy a direct stream link
+- **Tagging & ratings** — tag videos from an overlay in the player
+  (right side in fullscreen, below the player otherwise) and rate them
+  1–5 stars; tags are organized in exclusive groups (e.g.
+  work/personal, sunny/cloudy/rainy) and managed on a dedicated page;
+  everything is stored server-side in a SQLite database
+  (`data/tags.db`)
 - Dark / light themes, list/grid browsing, search and sorting
 
 ## Run directly (Node.js)
@@ -66,6 +72,17 @@ Notes:
 |------------|----------------------------------------------------------------|
 | `PORT`     | HTTP port (default `3000`)                                     |
 | `HOST_ROOT`| Where the host filesystem is mounted inside the container (default unset = serve `/` directly; Docker compose sets `/host`) |
+
+The tagging database lives in `data/` next to `server.js` (created on
+first use). In Docker it is persisted via the `srvfiles-data` volume.
+
+## API (tags)
+
+- `GET /api/tags` — all groups and tags
+- `POST /api/tags` / `PUT /api/tags/:id` / `DELETE /api/tags/:id` — manage tags
+- `POST /api/groups` / `PUT /api/groups/:id` / `DELETE /api/groups/:id` — manage groups
+- `GET /api/video/tags?path=…` — tags + rating of one video
+- `PUT /api/video/tags` — set `{ path, tagIds, rating }` (rating 1–5 or `null`)
 
 ## API (for external players)
 
