@@ -15,7 +15,7 @@ services:
     container_name: srvfiles
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "3003:3000"
     environment:
       # Where the host filesystem is mounted inside the container
       HOST_ROOT: /host

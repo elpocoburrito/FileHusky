@@ -30,7 +30,7 @@
         folder: params.get('folder') || '',
       };
     }
-    return { name: 'tags' };
+    if (route === '/tags') return { name: 'tags' };
     return { name: 'browse', path: params.get('path') || null };
   }
 

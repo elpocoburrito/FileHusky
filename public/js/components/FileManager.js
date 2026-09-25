@@ -18,6 +18,7 @@ const FileManager = {
       searchText: '',
       editPathText: '',
       editingPath: false,
+      menuFor: null,        // path of the folder whose context menu is open
       // scroll position memory, keyed by folder path (shared across instances)
       _scrollMem: FileManager._scrollMem || (FileManager._scrollMem = {}),
     };
@@ -87,7 +88,12 @@ const FileManager = {
     },
   },
 
+  mounted() {
+    document.addEventListener('keydown', this.onMenuKey);
+  },
+
   unmounted() {
+    document.removeEventListener('keydown', this.onMenuKey);
     if (this.data) {
       this._scrollMem[this.data.path] = window.scrollY;
     }
@@ -185,6 +191,47 @@ const FileManager = {
     itemSub(item) {
       if (item.isDirectory) return 'Folder';
       return Utils.formatSize(item.size) + ' · ' + Utils.formatDate(item.mtime);
+    },
+
+    // ── Folder context menu (⋮): zip download + delete ─────────────────
+    onMenuKey(e) {
+      if (e.key === 'Escape' && this.menuFor) this.closeMenu();
+    },
+
+    toggleMenu(item) {
+      this.menuFor = this.menuFor === item.path ? null : item.path;
+    },
+
+    closeMenu() {
+      this.menuFor = null;
+    },
+
+    downloadZip(item) {
+      this.closeMenu();
+      const a = document.createElement('a');
+      a.href = '/api/download/zip?path=' + encodeURIComponent(item.path);
+      a.download = item.name + '.zip';
+      document.body.append(a);
+      a.click();
+      a.remove();
+    },
+
+    async deleteFolder(item) {
+      this.closeMenu();
+      if (!confirm('Delete folder “' + item.name + '” and ALL of its contents?\n\nThis cannot be undone.')) return;
+      try {
+        await Utils.api('/api/folder?path=' + encodeURIComponent(item.path), { method: 'DELETE' });
+        // If the deleted folder contains the folder we are browsing, go up
+        const cur = this.data ? this.data.path : '';
+        if (cur === item.path || cur.startsWith(item.path + '/') || cur.startsWith(item.path + '\\')) {
+          const parent = item.path.replace(/[\\/][^\\/]*$/, '') || item.path;
+          this.navigate(parent);
+        } else {
+          this.refresh();
+        }
+      } catch (e) {
+        alert('Delete failed: ' + e.message);
+      }
     },
   },
 
@@ -284,6 +331,9 @@ const FileManager = {
       </button>
 
       <!-- ── States ──────────────────────────────────────────────────── -->
+      <!-- Backdrop: click anywhere closes an open folder menu -->
+      <div v-if="menuFor" class="row-menu-backdrop" @click="closeMenu"></div>
+
       <div v-if="loading" class="state-block">
         <div class="spinner"></div>
         <p>Loading…</p>
@@ -302,7 +352,7 @@ const FileManager = {
 
       <!-- ── File list ───────────────────────────────────────────────── -->
       <ul v-else-if="s.viewMode === 'list'" class="file-list">
-        <li v-for="item in visibleItems" :key="item.path">
+        <li v-for="item in visibleItems" :key="item.path" :class="{ 'has-menu': item.isDirectory }">
           <button class="file-row" @click="openItem(item)">
             <span class="file-icon" :class="item.isDirectory ? 'is-folder' : (item.isVideo ? 'is-video' : (item.isImage ? 'is-image' : 'is-file'))">
               <ui-icon :name="itemIcon(item)" :size="26"></ui-icon>
@@ -314,19 +364,56 @@ const FileManager = {
             <ui-icon v-if="item.isVideo" name="play" :size="22" class="file-play"></ui-icon>
             <ui-icon v-else-if="item.isDirectory" name="chevronRight" :size="22" class="file-chevron"></ui-icon>
           </button>
+
+          <!-- Folder context menu (⋮) -->
+          <template v-if="item.isDirectory">
+            <button class="row-menu-btn" @click.stop="toggleMenu(item)"
+                    title="Folder actions" aria-label="Folder actions">
+              <ui-icon name="moreVert" :size="20"></ui-icon>
+            </button>
+            <div v-if="menuFor === item.path" class="row-menu">
+              <button class="row-menu-item" @click="downloadZip(item)">
+                <ui-icon name="download" :size="18"></ui-icon>
+                <span>Download as ZIP</span>
+              </button>
+              <button class="row-menu-item danger" @click="deleteFolder(item)">
+                <ui-icon name="delete" :size="18"></ui-icon>
+                <span>Delete folder…</span>
+              </button>
+            </div>
+          </template>
         </li>
       </ul>
 
       <div v-else class="file-grid">
-        <button v-for="item in visibleItems" :key="item.path" class="grid-card"
-                @click="openItem(item)">
-          <span class="grid-icon" :class="item.isDirectory ? 'is-folder' : (item.isVideo ? 'is-video' : (item.isImage ? 'is-image' : 'is-file'))">
-            <ui-icon :name="itemIcon(item)" :size="44"></ui-icon>
-          </span>
-          <span class="grid-name">{{ item.name }}</span>
-          <span class="grid-sub">{{ itemSub(item) }}</span>
-          <span v-if="item.isVideo" class="grid-play"><ui-icon name="play" :size="18"></ui-icon></span>
-        </button>
+        <div v-for="item in visibleItems" :key="item.path" class="grid-cell">
+          <button class="grid-card" @click="openItem(item)">
+            <span class="grid-icon" :class="item.isDirectory ? 'is-folder' : (item.isVideo ? 'is-video' : (item.isImage ? 'is-image' : 'is-file'))">
+              <ui-icon :name="itemIcon(item)" :size="44"></ui-icon>
+            </span>
+            <span class="grid-name">{{ item.name }}</span>
+            <span class="grid-sub">{{ itemSub(item) }}</span>
+            <span v-if="item.isVideo" class="grid-play"><ui-icon name="play" :size="18"></ui-icon></span>
+          </button>
+
+          <!-- Folder context menu (⋮) -->
+          <template v-if="item.isDirectory">
+            <button class="row-menu-btn grid" @click.stop="toggleMenu(item)"
+                    title="Folder actions" aria-label="Folder actions">
+              <ui-icon name="moreVert" :size="18"></ui-icon>
+            </button>
+            <div v-if="menuFor === item.path" class="row-menu">
+              <button class="row-menu-item" @click="downloadZip(item)">
+                <ui-icon name="download" :size="18"></ui-icon>
+                <span>Download as ZIP</span>
+              </button>
+              <button class="row-menu-item danger" @click="deleteFolder(item)">
+                <ui-icon name="delete" :size="18"></ui-icon>
+                <span>Delete folder…</span>
+              </button>
+            </div>
+          </template>
+        </div>
       </div>
     </main>
   </div>

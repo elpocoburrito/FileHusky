@@ -1519,3 +1519,74 @@ button {
   font-size: 0.85rem;
   color: var(--text-dim);
 }
+
+/* ═══ Folder context menu (⋮ button on folder rows) ════════════════════════ */
+
+.file-list li { position: relative; }
+
+/* Folders get extra right padding so the ⋮ button doesn't cover the chevron */
+.file-list li.has-menu .file-row { padding-right: 56px; }
+
+.row-menu-btn {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim);
+  z-index: 2;
+}
+
+.row-menu-btn:hover { background: var(--surface-3); color: var(--text); }
+
+/* Grid view: ⋮ button pinned to the card's top-right corner */
+.grid-cell { position: relative; }
+.grid-cell .grid-card { width: 100%; }
+.row-menu-btn.grid {
+  top: 8px;
+  right: 6px;
+  transform: none;
+  background: var(--surface-2);
+}
+
+.row-menu-backdrop { position: fixed; inset: 0; z-index: 60; }
+
+.row-menu {
+  position: absolute;
+  right: 10px;
+  top: 56px;
+  z-index: 61;
+  min-width: 200px;
+  padding: 6px;
+  border-radius: 12px;
+  background: var(--surface);
+  border: 1px solid var(--outline);
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+}
+
+/* Grid variant: menu drops from the corner button */
+.grid-cell .row-menu { top: 46px; right: 4px; }
+
+.row-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 10px 12px;
+  border-radius: 9px;
+  font-size: 0.92rem;
+  font-weight: 500;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.row-menu-item:hover { background: var(--surface-2); }
+.row-menu-item.danger { color: var(--danger); }
+.row-menu-item.danger:hover { background: var(--danger-soft); }

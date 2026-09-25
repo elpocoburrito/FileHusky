@@ -27,6 +27,8 @@ segment is transcoded when you reach it.
   work/personal, sunny/cloudy/rainy) and managed on a dedicated page;
   everything is stored server-side in a SQLite database
   (`data/tags.db`)
+- **Folder actions (⋮ menu on folder rows)** — download a whole folder
+  as a ZIP file, or delete it (with its contents) after confirmation
 - Dark / light themes, list/grid browsing, search and sorting
 
 ## Run directly (Node.js)
@@ -83,6 +85,10 @@ first use). In Docker it is persisted via the `srvfiles-data` volume.
 - `POST /api/groups` / `PUT /api/groups/:id` / `DELETE /api/groups/:id` — manage groups
 - `GET /api/video/tags?path=…` — tags + rating of one video
 - `PUT /api/video/tags` — set `{ path, tagIds, rating }` (rating 1–5 or `null`)
+- `GET /api/download/zip?path=…` — stream a folder as a ZIP download
+  (folder is the zip root; hidden files included)
+- `DELETE /api/folder?path=…` — delete a folder and all contents
+  (filesystem roots are refused)
 
 ## API (for external players)
 

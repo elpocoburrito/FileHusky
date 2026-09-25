@@ -82,9 +82,9 @@ const SPEED_PRESETS = {
 
 function parseEncOptions(query) {
   const codec = (query.codec === 'hevc' && HEVC_AVAILABLE) ? 'hevc' : 'h264';
-  const resolution = RESOLUTIONS.hasOwnProperty(query.res) ? RESOLUTIONS[query.res] : 720;
+  const resolution = Object.hasOwn(RESOLUTIONS, query.res) ? RESOLUTIONS[query.res] : 720;
   const qualityMap = QUALITIES[codec];
-  const quality = qualityMap.hasOwnProperty(query.cq) ? qualityMap[query.cq] : qualityMap.medium;
+  const quality = Object.hasOwn(qualityMap, query.cq) ? qualityMap[query.cq] : qualityMap.medium;
   const encoderName = codec === 'hevc' ? 'hevc_nvenc' : ENCODER;
   const speed = SPEED_PRESETS[encoderName] && ['fast', 'balanced', 'best'].includes(query.speed)
     ? query.speed : 'fast';
@@ -799,6 +799,68 @@ app.get('/api/browse', (req, res) => {
   }
 });
 
+// ─── Folder zip download & delete ───────────────────────────────────────
+const archiver = require('archiver');
+
+/** Stream a folder as a ZIP file. Content-Disposition names it after the folder. */
+app.get('/api/download/zip', (req, res) => {
+  const sp = safePath(req.query.path);
+  if (!sp) return res.status(400).json({ error: 'Invalid path' });
+  try {
+    if (!fs.statSync(sp).isDirectory()) {
+      return res.status(400).json({ error: 'Not a folder' });
+    }
+  } catch (_) {
+    return res.status(400).json({ error: 'Invalid path' });
+  }
+  const base = path.basename(sp) || 'folder';
+  res.set({
+    'Content-Type': 'application/zip',
+    'Cache-Control': 'no-cache',
+    // ASCII fallback + RFC 5987 for non-ASCII folder names
+    'Content-Disposition': 'attachment; filename="' +
+      base.replace(/[^\x20-\x7e]/g, '_') + '.zip"; filename*=UTF-8\'\'' +
+      encodeURIComponent(base) + '.zip',
+  });
+  // Media files barely compress — lowest deflate level keeps CPU and latency low
+  const archive = archiver('zip', { zlib: { level: 1 } });
+  archive.on('error', (err) => {
+    console.error('[zip] failed for ' + sp + ':', err.message);
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+    else res.end();
+  });
+  archive.on('warning', (err) => {
+    if (err.code !== 'ENOENT') console.warn('[zip] ' + err.message);
+  });
+  archive.pipe(res);
+  // Folder itself as the zip root (extracts into a named directory)
+  archive.directory(sp, base);
+  archive.finalize();
+});
+
+/** Delete a folder and everything inside it. */
+app.delete('/api/folder', (req, res) => {
+  const sp = safePath(req.query.path);
+  if (!sp) return res.status(400).json({ error: 'Invalid path' });
+  // Refuse to delete filesystem / mount roots
+  if (sp === path.parse(sp).root || (HOST_ROOT && sp === HOST_ROOT)) {
+    return res.status(400).json({ error: 'Refusing to delete a root' });
+  }
+  try {
+    if (!fs.statSync(sp).isDirectory()) {
+      return res.status(400).json({ error: 'Not a folder' });
+    }
+  } catch (_) {
+    return res.status(400).json({ error: 'Invalid path' });
+  }
+  try {
+    fs.rmSync(sp, { recursive: true, force: true });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+  res.json({ ok: true });
+});
+
 app.get('/api/video/raw', (req, res) => {
   const sp = safePath(req.query.path);
   if (!sp) return res.status(400).json({ error: 'Invalid path' });
@@ -1096,12 +1158,8 @@ app.put('/api/video/tags', (req, res) => {
     kept.push(r.id);
   }
 
-  let videoId = db.prepare('SELECT id FROM videos WHERE path = ?').get(p);
-  if (!videoId) {
-    db.prepare('INSERT INTO videos (path) VALUES (?)').run(p);
-    videoId = db.prepare('SELECT id FROM videos WHERE path = ?').get(p);
-  }
-  videoId = videoId.id;
+  const videoId = getOrCreateVideo(p);
+  if (!videoId) return res.status(400).json({ error: 'Path required' });
 
   db.exec('BEGIN');
   try {
