@@ -339,3 +339,24 @@ Two follow-ups after taps started working again:
   stale lock is released. `tryAutoLandscape()` was replaced by
   `applyAutoOrientation()` + `clearOrientationRetry()` (the retry timer is
   also cleared in `cleanup()`).
+
+----
+
+## Fix: UI re-appeared after a tap hid it (compatibility mouse events)
+
+Symptom: with the UI visible, tapping empty video space hid it for a split
+second and then it came straight back.
+
+Cause: the surface was bound to **`@mousemove`**, and mobile browsers synthesise
+compatibility **mouse** events (`mousemove`) immediately after a tap — now that
+the `touchend` preventDefault blocker is gone, nothing suppressed them. That
+`mousemove` ran `onPointerMove`, whose `if (e.pointerType && ...)` guard passed
+because a plain `MouseEvent` has **no** `pointerType`, so it was treated as a
+mouse and called `showControls()` — re-revealing the UI the same tap had hidden.
+
+- The surface now listens to pointer events only: `@pointermove` /
+  `@pointerleave` replace `@mousemove` / `@mouseleave`.
+- New `pointerTypeOf(e)` resolves the type as `e.pointerType ||
+  (isTouchDevice() ? 'touch' : 'mouse')`, so an absent `pointerType` is never
+  read as a mouse. Used by `onPointerMove`, `onMouseLeave` and `onPointerDown`.
+- `lastPointerType` became dead state (write-only) and was removed.

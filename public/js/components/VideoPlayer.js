@@ -57,7 +57,6 @@ const VideoPlayer = {
       loopOn: false,
       controlsVisible: true,
       hideTimer: null,
-      lastPointerType: 'mouse',
       currentTime: 0,
       bufferedPercent: 0,
       scrubbing: false,
@@ -926,10 +925,18 @@ const VideoPlayer = {
       this.controlsVisible = false;
     },
 
-    /** Pointer/mouse moved over the player — reveal controls (desktop) */
+    /**
+     * Resolve a pointer event's type. Touch devices synthesise compatibility
+     * *mouse* events after a tap, so an absent pointerType must never be read
+     * as a mouse — that is what made a tap re-reveal the UI it had just hidden.
+     */
+    pointerTypeOf(e) {
+      return (e && e.pointerType) || (this.isTouchDevice() ? 'touch' : 'mouse');
+    },
+
+    /** Pointer moved over the player — reveal controls (mouse only) */
     onPointerMove(e) {
-      if (e.pointerType && e.pointerType !== 'mouse') return;
-      this.lastPointerType = 'mouse';
+      if (this.pointerTypeOf(e) !== 'mouse') return;
       if (this.phase === 'ready') this.showControls();
     },
 
@@ -956,8 +963,8 @@ const VideoPlayer = {
     },
 
     /** Mouse left the player — hide sooner than the touch idle timer */
-    onMouseLeave() {
-      if (this.lastPointerType !== 'mouse') return;
+    onMouseLeave(e) {
+      if (this.pointerTypeOf(e) !== 'mouse') return;
       if (!this.isPlaying) return; // paused keeps controls visible anyway
       this.clearHideTimer();
       this.hideTimer = setTimeout(() => this.hideControls(), 800);
@@ -1296,8 +1303,8 @@ const VideoPlayer = {
     <!-- ── Sticky video area ─────────────────────────────────────────── -->
     <div class="video-area" ref="videoArea"
          @pointerdown="onPointerDown" @pointerup="onPointerUp"
-         @pointercancel="onPointerCancel" @mouseleave="onMouseLeave"
-         @mousemove="onPointerMove" @wheel.prevent="onWheel"
+         @pointercancel="onPointerCancel" @pointerleave="onMouseLeave"
+         @pointermove="onPointerMove" @wheel.prevent="onWheel"
          @click.capture="onCaptureClick"
          :class="{ 'vc-hide-cursor': !controlsVisible, 'vc-ui-hidden': !controlsVisible }">
       <video ref="video" class="video-el" playsinline preload="auto" v-show="!remote"></video>
