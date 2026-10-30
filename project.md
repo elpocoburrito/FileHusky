@@ -267,3 +267,47 @@ being the `<video>` element rather than the whole playback surface:
   fullscreen exits. The orientation button's `toggleOrientation` reuses the
   same `lockOrientation` helper (and keeps the iOS fullscreen-cycle fallback).
 - No `server.js` changes; verified with `node --check` + pi-lens diagnostics.
+
+----
+
+## Fix: mobile taps were swallowed (player UI never opened)
+
+The previous "tap the video to toggle the UI" fix was built on `click`, which
+never fires reliably here. Two independent causes, both now removed:
+
+1. **`index.html`'s double-tap zoom blocker** called `e.preventDefault()` on
+   `touchend` for any tap within 300 ms of the previous one. Preventing the
+   default on `touchend` suppresses the **synthesized click**, so every second
+   quick tap (the natural rhythm when a tap appears to do nothing) was eaten —
+   app-wide, not just in the player. It was redundant anyway: `touch-action:
+   manipulation` on `html, body` already disables double-tap zoom. Only the
+   `gesturestart` and two-finger `touchmove` pinch blockers remain.
+2. **`click` on a `<video>`** is unreliable on mobile browsers even without
+   that blocker.
+
+The player surface now lags nothing to `click`:
+
+- `@pointerdown` records `_down = {type, x, y, t, target}`; `@pointerup`
+  (`onPointerUp`) treats it as a tap when the pointer did not move more than
+  12 px, was held under 700 ms, and neither the start nor the end target is
+  inside `.vcontrols / .vc-top / .vc-center / .remote-panel / .tag-fs /
+  .vc-quality / .quality-backdrop / .video-overlay` (`isControlTarget()`).
+  `@pointercancel` (scroll/gesture takeover) discards the pending tap.
+- Touch tap → `togglePlayerUi()`. Mouse keeps desktop conventions: single
+  click → play/pause (260 ms deferred), double click → fullscreen. `@click`
+  and `@dblclick` bindings were removed from `.video-area` / `<video>`, and
+  `onVideoClick` / `onVideoDblClick` are gone.
+- Hiding is centralised in `hideControls()` (clears the timer and closes the
+  quality menu) — used by `togglePlayerUi`, `scheduleHide` and the
+  mouse-leave timer. `.vc-ui-hidden` (pointer-events: none on `.vc-top` /
+  `.vc-center`) keeps hidden controls inert; `vcontrols-hidden` already did.
+
+**Auto-landscape fullscreen** is now shared state, not one handler:
+`syncFullscreenState(isFs)` drives `isFullscreen` + `tryAutoLandscape()`, which
+locks `landscape` when the device is touch and `mediaIsLandscape()` (from
+`videoWidth/Height`, falling back to ffprobe metadata), retrying once after
+400 ms because fullscreen may still be settling; leaving fullscreen calls
+`unlockOrientation()`. `onFullscreenChange` (document) and the iOS
+`webkitbeginfullscreen` / `webkitendfullscreen` events on the `<video>` both
+route into it, so iOS native video fullscreen is covered too (iOS has no
+orientation-lock API, so there it remains best-effort).

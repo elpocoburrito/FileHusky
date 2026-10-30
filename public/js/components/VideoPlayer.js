@@ -447,6 +447,16 @@ const VideoPlayer = {
       };
       player.addEventListener('loadedmetadata', onLoaded);
 
+      // iOS enters fullscreen on the <video> element itself (there is no
+      // document.fullscreenElement), so mirror those events into UI state.
+      if (!this._webkitFsBound) {
+        this._webkitFsBound = true;
+        this._onWebkitBeginFs = () => this.syncFullscreenState(true);
+        this._onWebkitEndFs = () => this.syncFullscreenState(false);
+        player.addEventListener('webkitbeginfullscreen', this._onWebkitBeginFs);
+        player.addEventListener('webkitendfullscreen', this._onWebkitEndFs);
+      }
+
       if (this.useDirect) {
         // Direct play of the original file (browser-compatible sources)
         player.src = this.rawUrl;
@@ -659,6 +669,12 @@ const VideoPlayer = {
         player.removeEventListener('progress', this.onBufferUi);
         player.removeEventListener('playing', this.onPlayingUi);
         clearTimeout(this._recoverResetTimer);
+        clearTimeout(this._orientRetry);
+        if (this._onWebkitBeginFs) {
+          player.removeEventListener('webkitbeginfullscreen', this._onWebkitBeginFs);
+          player.removeEventListener('webkitendfullscreen', this._onWebkitEndFs);
+          this._webkitFsBound = false;
+        }
         player.pause();
         player.removeAttribute('src');
         player.load();
@@ -824,50 +840,66 @@ const VideoPlayer = {
       };
     },
 
-    onVideoClick(e) {
-      this.qualityOpen = false;
-      if (this.phase !== 'ready') return;
-      // A click that starts on a control or an overlay must not toggle the UI
-      // (the bars use @click.stop, but menus/tag panels don't).
-      const target = e && e.target;
-      if (target && target.closest && target.closest('.vcontrols, .vc-top, .vc-center, .remote-panel, .tag-fs, .vc-quality, .quality-backdrop, .video-overlay')) {
+    /**
+     * Tap handling for the whole playback surface, driven by pointer events.
+     *
+     * `click` cannot be trusted here: mobile browsers do not reliably deliver
+     * it to a <video> element, and the app-wide double-tap zoom blocker in
+     * index.html calls preventDefault() on touchend (which kills the
+     * synthesized click) for any tap within 300 ms of the previous one.
+     * Pointer events are never suppressed that way, so a pointerup that did
+     * not drag becomes a tap.
+     */
+    onPointerUp(e) {
+      const down = this._down;
+      this._down = null;
+      if (this.phase !== 'ready' || !down) return;
+      // Taps that start or end on a control / overlay are never UI toggles
+      if (this.isControlTarget(e.target) || this.isControlTarget(down.target)) return;
+      if (this.qualityOpen) { this.qualityOpen = false; return; }
+      // Drag (scrubbing, scrolling) or long-press: not a tap
+      const dx = (e.clientX || 0) - down.x;
+      const dy = (e.clientY || 0) - down.y;
+      if (Math.sqrt(dx * dx + dy * dy) > 12) return;
+      if (Date.now() - down.t > 700) return;
+
+      if (down.type !== 'mouse') {
+        // Touch: a tap anywhere opens/closes the player UI
+        this.togglePlayerUi();
         return;
       }
-      // The click event itself carries no pointerType (plain MouseEvent), so
-      // we use the pointer type captured at pointerdown (always fires first).
-      // Fall back to device detection if pointerdown never arrived.
-      const isTouch = this._downPointerType
-        ? this._downPointerType !== 'mouse'
-        : this.isTouchDevice();
-      // Touch: tap toggles the player UI (bars + center play/pause).
-      // Mouse: click toggles play/pause (desktop convention), unless a
-      // double-click is in progress — that toggles fullscreen instead.
-      if (isTouch) {
-        this.togglePlayerUi();
-      } else {
-        if (this._clickTimer) return; // second click — the dblclick handler takes over
-        this._clickTimer = setTimeout(() => {
-          this._clickTimer = null;
-          this.togglePlay();
-        }, 260);
+      // Desktop: single click = play/pause, deferred so a double-click can
+      // take over and toggle fullscreen instead (same timing as before).
+      if (this._clickTimer) {
+        clearTimeout(this._clickTimer);
+        this._clickTimer = null;
+        this.toggleFullscreen();
+        return;
       }
+      this._clickTimer = setTimeout(() => {
+        this._clickTimer = null;
+        this.togglePlay();
+      }, 260);
+    },
+
+    /** True when the element belongs to a player control or overlay. */
+    isControlTarget(el) {
+      if (!el || !el.closest) return false;
+      return !!el.closest('.vcontrols, .vc-top, .vc-center, .remote-panel, .tag-fs, ' +
+        '.vc-quality, .quality-backdrop, .video-overlay');
     },
 
     /** Show/hide the player UI overlay (top bar, bottom bar, center button) */
     togglePlayerUi() {
-      this.controlsVisible = !this.controlsVisible;
-      if (this.controlsVisible) this.scheduleHide();
-      else this.clearHideTimer();
+      if (this.controlsVisible) this.hideControls();
+      else this.showControls();
     },
 
-    /** Mouse double-click on the video: enter/exit fullscreen */
-    onVideoDblClick() {
-      const isTouch = this._downPointerType
-        ? this._downPointerType !== 'mouse'
-        : this.isTouchDevice();
-      if (isTouch) return;
-      if (this._clickTimer) { clearTimeout(this._clickTimer); this._clickTimer = null; }
-      this.toggleFullscreen();
+    /** Hide the player UI; an open quality menu goes with it. */
+    hideControls() {
+      this.clearHideTimer();
+      this.qualityOpen = false;
+      this.controlsVisible = false;
     },
 
     /** Pointer/mouse moved over the player — reveal controls (desktop) */
@@ -877,10 +909,23 @@ const VideoPlayer = {
       if (this.phase === 'ready') this.showControls();
     },
 
-    /** Record the pointer type at press time (used by onVideoClick) */
+    /** A cancelled pointer (scroll/gesture took over) is never a tap. */
+    onPointerCancel() {
+      this._down = null;
+    },
+
+    /** Record the pointer type and origin at press time (used by onPointerUp) */
     onPointerDown(e) {
-      this._downPointerType = e.pointerType || (this.isTouchDevice() ? 'touch' : 'mouse');
-      if (this._downPointerType === 'mouse') this.onPointerMove(e);
+      const type = e.pointerType || (this.isTouchDevice() ? 'touch' : 'mouse');
+      this._downPointerType = type;
+      this._down = {
+        type,
+        x: e.clientX || 0,
+        y: e.clientY || 0,
+        t: Date.now(),
+        target: e.target,
+      };
+      if (type === 'mouse') this.onPointerMove(e);
     },
 
     /** Mouse left the player — hide sooner than the touch idle timer */
@@ -888,7 +933,7 @@ const VideoPlayer = {
       if (this.lastPointerType !== 'mouse') return;
       if (!this.isPlaying) return; // paused keeps controls visible anyway
       this.clearHideTimer();
-      this.hideTimer = setTimeout(() => { this.controlsVisible = false; }, 800);
+      this.hideTimer = setTimeout(() => this.hideControls(), 800);
     },
 
     // ── Wall-clock readout (top bar) ──────────────────────────────────
@@ -980,7 +1025,7 @@ const VideoPlayer = {
       this.clearHideTimer();
       const player = this.$refs.video;
       if (!player || player.paused) return; // always show controls when paused
-      this.hideTimer = setTimeout(() => { this.controlsVisible = false; }, 3000);
+      this.hideTimer = setTimeout(() => this.hideControls(), 3000);
     },
 
     clearHideTimer() {
@@ -1037,18 +1082,31 @@ const VideoPlayer = {
 
     onFullscreenChange() {
       const area = this.$refs.videoArea;
-      const isFs = !!area && document.fullscreenElement === area;
+      this.syncFullscreenState(!!area && document.fullscreenElement === area);
+    },
+
+    /** Mirror a fullscreen change into UI state and orientation handling. */
+    syncFullscreenState(isFs) {
       this.isFullscreen = isFs;
       this.onOrientationChange();
-      if (isFs) {
-        // Entering fullscreen on a touch device: a landscape video should fill
-        // a landscape screen, so rotate automatically when we can.
-        if (this.isTouchDevice() && this.mediaIsLandscape()) {
-          this.lockOrientation('landscape');
-        }
-      } else {
-        this.unlockOrientation();
-      }
+      if (isFs) this.tryAutoLandscape();
+      else this.unlockOrientation();
+    },
+
+    /**
+     * Entering fullscreen on a touch device should rotate to landscape when
+     * the video is wider than tall — a landscape video on a portrait screen
+     * wastes most of the display.
+     */
+    tryAutoLandscape() {
+      if (!this.isTouchDevice() || !this.mediaIsLandscape()) return;
+      this.lockOrientation('landscape');
+      // Fullscreen may still be settling, and some browsers only honour the
+      // lock once it is fully applied — retry once shortly after.
+      clearTimeout(this._orientRetry);
+      this._orientRetry = setTimeout(() => {
+        if (this.isFullscreen && !this.landscape) this.lockOrientation('landscape');
+      }, 400);
     },
 
     /** True when the video being played is at least as wide as it is tall */
@@ -1198,12 +1256,11 @@ const VideoPlayer = {
 
     <!-- ── Sticky video area ─────────────────────────────────────────── -->
     <div class="video-area" ref="videoArea"
-         @pointerdown="onPointerDown" @mousemove="onPointerMove"
-         @mouseleave="onMouseLeave" @wheel.prevent="onWheel"
-         @click="onVideoClick"
+         @pointerdown="onPointerDown" @pointerup="onPointerUp"
+         @pointercancel="onPointerCancel" @mouseleave="onMouseLeave"
+         @mousemove="onPointerMove" @wheel.prevent="onWheel"
          :class="{ 'vc-hide-cursor': !controlsVisible, 'vc-ui-hidden': !controlsVisible }">
-      <video ref="video" class="video-el" playsinline preload="auto" v-show="!remote"
-             @dblclick="onVideoDblClick"></video>
+      <video ref="video" class="video-el" playsinline preload="auto" v-show="!remote"></video>
 
       <!-- ── Remote-control panel (casting mode) ──────────────────────── -->
       <div v-if="remote" class="remote-panel">
