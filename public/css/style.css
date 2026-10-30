@@ -1219,6 +1219,109 @@ button {
   .modal-card { border-radius: 20px; padding-bottom: 20px; }
 }
 
+/* ═══ Remote-control panel (casting mode) ══════════════════════════════ */
+
+.remote-panel {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 24px 16px 96px;
+  background: radial-gradient(circle at 50% 35%, #1b2430 0%, #0b0e13 70%);
+  color: #e8eaed;
+  text-align: center;
+}
+
+.remote-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(91, 155, 255, 0.16);
+  color: var(--accent);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.remote-title {
+  font-size: 1.15rem;
+  font-weight: 600;
+  max-width: 90%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remote-status {
+  font-size: 0.9rem;
+  color: rgba(232, 234, 237, 0.7);
+  max-width: 90%;
+}
+.remote-status-ok { color: #81c995; }
+.remote-status-err { color: #ff8a80; }
+
+.remote-actions {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  margin-top: 4px;
+}
+
+.remote-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+}
+.remote-btn:hover { background: rgba(255, 255, 255, 0.18); }
+.remote-btn:active { transform: scale(0.94); }
+
+.remote-btn-main {
+  width: 88px;
+  height: 88px;
+  background: var(--accent);
+  color: #06121f;
+}
+.remote-btn-main:hover { background: #7cb0ff; }
+
+.remote-disconnect {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 9px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 999px;
+  background: transparent;
+  color: #e8eaed;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.remote-disconnect:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.45);
+}
+
+/* Compact remote panel on short screens */
+@media (max-height: 520px) {
+  .remote-panel { gap: 8px; padding: 10px 12px 78px; }
+  .remote-btn { width: 46px; height: 46px; }
+  .remote-btn-main { width: 68px; height: 68px; }
+}
+
 /* ═══ Cast-to-receiver modal ═══════════════════════════════════════════ */
 
 .cast-section { margin: 10px 0 14px; }

@@ -78,11 +78,42 @@ const VideoPlayer = {
       wallClock: '',            // HH:MM readout for the top bar
       clockTimer: null,
       landscape: false,         // orientation lock active
+
+      // ── Casting / remote-control mode ──────────────────────────────────
+      remote: false,            // local playback replaced by the remote panel
     };
   },
 
   computed: {
     s() { return SettingsStore.settings; },
+
+    // ── Casting session ────────────────────────────────────────────────
+    cast() { return CastStore.state; },
+
+    receiverName() {
+      return (this.cast.receiver && this.cast.receiver.name) || 'receiver';
+    },
+
+    remoteStatusText() {
+      if (this.cast.error) return this.cast.error;
+      const pb = this.cast.playback;
+      if (!pb) return 'Connecting…';
+      switch (pb.status) {
+        case 'playing': return 'Playing';
+        case 'paused': return 'Paused';
+        case 'loading': return 'Loading…';
+        case 'error': return 'Playback error' + (pb.error ? ': ' + pb.error : '');
+        case 'stopped': return 'Stopped';
+        default: return 'Idle';
+      }
+    },
+
+    // Duration shown on the seek bar — receiver duration while casting
+    displayDuration() {
+      if (!this.remote) return this.seekMax;
+      const pb = this.cast.playback;
+      return (pb && pb.duration) || (this.meta && this.meta.duration) || 0;
+    },
 
     // Template needs to disable the HEVC option on unsupported devices
     hevcSupported: () => hevcSupported(),
@@ -121,7 +152,7 @@ const VideoPlayer = {
       return (this.meta && this.meta.duration) ? this.meta.duration : 0;
     },
     currentTimePercent() {
-      return this.seekMax ? Math.min(100, this.currentTime / this.seekMax * 100) : 0;
+      return this.displayDuration ? Math.min(100, this.currentTime / this.displayDuration * 100) : 0;
     },
 
     rawUrl() {
@@ -147,6 +178,10 @@ const VideoPlayer = {
     },
 
     activeConfig() {
+      if (this.remote) {
+        const how = { 'hls-transcode': 'transcoding', 'direct-file': 'direct play', 'local-file': 'local file' }[this.cast.backend];
+        return 'Casting to ' + this.receiverName + (how ? ' · ' + how : '');
+      }
       if (this.useDirect) return 'Direct play — original quality, no transcoding';
       const res = this.s.videoResolution === 'orig' ? 'original resolution' : this.s.videoResolution + 'p';
       const speed = { fast: 'fastest', balanced: 'balanced', best: 'best' }[this.s.encodeSpeed] || 'fastest';
@@ -197,6 +232,16 @@ const VideoPlayer = {
       this.loadUpNext();
       this.loadVideoTags();
     },
+
+    // Receiver state pushed by the polling loop
+    'cast.playback'(pb) {
+      this.onCastPlayback(pb);
+    },
+
+    // Casting session started/stopped elsewhere (CastPanel, disconnect…)
+    'cast.active'(active) {
+      this.onCastActive(active);
+    },
   },
 
   async mounted() {
@@ -223,6 +268,7 @@ const VideoPlayer = {
   methods: {
     async start() {
       this.cleanup();
+      this.remote = false;
       this.phase = 'loading';
       this.errorMsg = null;
       this.statusText = 'Analyzing video…';
@@ -235,6 +281,13 @@ const VideoPlayer = {
       this.bufferedPercent = 0;
       this.scrubbing = false;
       this.controlsVisible = true;
+
+      // A casting session is active: this page becomes a remote control for
+      // the receiver instead of playing locally.
+      if (CastStore.state.active) {
+        await this.startRemote();
+        return;
+      }
 
       try {
         // 1. Metadata (duration, resolution) — shown immediately
@@ -274,6 +327,97 @@ const VideoPlayer = {
         this.phase = 'error';
         this.errorMsg = e.message;
       }
+    },
+
+    /**
+     * Remote-control mode: no local playback. If the active session is
+     * already casting a different file, this video is cast to the receiver
+     * (auto-cast on open); otherwise we just mirror the receiver state.
+     */
+    async startRemote() {
+      // Stop any local playback (this path can be entered directly from the
+      // CastPanel without going through start()).
+      this.cleanup();
+      this.stream = null;
+      this.totalSegments = 0;
+      this.cachedSegments = 0;
+      this.remote = true;
+      this.phase = 'loading';
+      this.errorMsg = null;
+      this.statusText = 'Connecting to receiver…';
+      this.isPlaying = false;
+      this.currentTime = 0;
+      this.bufferedPercent = 0;
+      this.scrubbing = false;
+      this.controlsVisible = true;
+      this.fullyCached = false;
+
+      try {
+        this.meta = await Utils.api('/api/video/metadata?path=' + encodeURIComponent(this.path));
+      } catch { this.meta = null; }
+
+      if (CastStore.state.path !== this.path) {
+        try {
+          await CastStore.cast({
+            path: this.path,
+            name: this.displayName,
+            folder: this.folder,
+            receiver: CastStore.state.receiver,
+          });
+        } catch (e) {
+          this.phase = 'error';
+          this.errorMsg = 'Could not cast to receiver: ' + e.message;
+          return;
+        }
+      } else {
+        CastStore.startPolling();
+      }
+
+      this.onCastPlayback(CastStore.state.playback);
+      this.phase = 'ready';
+      this.statusText = 'Casting to ' + this.receiverName;
+    },
+
+    /** Session toggled from outside this component. */
+    onCastActive(active) {
+      if (active) {
+        if (!this.remote && CastStore.state.path === this.path) this.startRemote();
+        return;
+      }
+      if (!this.remote) return;
+      // Session ended (e.g. disconnect from another view): resume locally
+      const pos = this._resumeAfterCast || 0;
+      this._resumeAfterCast = 0;
+      this.remote = false;
+      this.pendingSeek = pos;
+      this.start();
+    },
+
+    /** Mirror a receiver PlaybackState onto the UI. */
+    onCastPlayback(pb) {
+      if (!this.remote || !pb) return;
+      if (typeof pb.volume === 'number') {
+        if (pb.volume > 0) { this.playerVolume = pb.volume; this.muted = false; }
+        else this.muted = true;
+      }
+      this.isPlaying = pb.status === 'playing';
+      if (!this.scrubbing) this.currentTime = Number(pb.position) || 0;
+    },
+
+    remoteSeekRelative(delta) {
+      CastStore.seekRelative(delta).catch(() => {});
+      this.showControls();
+    },
+
+    /** Stop the receiver's playback but stay in remote mode. */
+    stopReceiver() {
+      CastStore.stop().catch(() => {});
+    },
+
+    /** Leave remote mode and continue watching on this device. */
+    async watchHere() {
+      this._resumeAfterCast = (this.cast.playback && this.cast.playback.position) || 0;
+      try { await CastStore.disconnect(); } catch { /* session still ends */ }
     },
 
     async attachPlayer() {
@@ -393,6 +537,17 @@ const VideoPlayer = {
       if (this.s[key] === value) return;
       this.s[key] = value;
       this.qualityOpen = false;
+      // While casting, a quality change re-casts the file with a new
+      // transcode session (the receiver keeps playing through it).
+      if (this.remote) {
+        CastStore.cast({
+          path: this.path,
+          name: this.displayName,
+          folder: this.folder,
+          receiver: CastStore.state.receiver,
+        }).catch(e => { this.errorMsg = e.message; });
+        return;
+      }
       this.changePlayback();
     },
 
@@ -563,6 +718,11 @@ const VideoPlayer = {
     },
 
     togglePlay() {
+      if (this.remote) {
+        CastStore.toggle().catch(() => {});
+        this.showControls();
+        return;
+      }
       const player = this.$refs.video;
       if (!player) return;
       if (player.paused) player.play().catch(() => {});
@@ -570,6 +730,14 @@ const VideoPlayer = {
     },
 
     toggleMute() {
+      if (this.remote) {
+        const target = this.muted ? (this.playerVolume || 0.5) : 0;
+        CastStore.setVolume(target).catch(() => {});
+        if (target > 0) { this.playerVolume = target; this.muted = false; }
+        else this.muted = true;
+        this.showVolHud();
+        return;
+      }
       const player = this.$refs.video;
       if (!player) return;
       player.muted = !player.muted;
@@ -577,9 +745,16 @@ const VideoPlayer = {
 
     /** Volume slider (hover bar next to the mute button) */
     onVolSlider(e) {
+      const v = parseFloat(e.target.value);
+      if (this.remote) {
+        if (v > 0) this.playerVolume = v;
+        this.muted = v === 0;
+        CastStore.setVolume(v).catch(() => {});
+        this.showVolHud();
+        return;
+      }
       const player = this.$refs.video;
       if (!player) return;
-      const v = parseFloat(e.target.value);
       player.volume = v;
       if (player.muted && v > 0) player.muted = false;
       this.showVolHud();
@@ -602,6 +777,11 @@ const VideoPlayer = {
     },
 
     toggleFullscreen() {
+      // While casting, fullscreen is toggled on the receiver's screen.
+      if (this.remote) {
+        CastStore.fullscreen().catch(() => {});
+        return;
+      }
       const area = this.$refs.videoArea;
       const player = this.$refs.video;
       if (document.fullscreenElement) {
@@ -620,10 +800,15 @@ const VideoPlayer = {
     },
 
     seekCommit(e) {
-      const player = this.$refs.video;
       const t = parseFloat(e.target.value);
       this.scrubbing = false;
       this.currentTime = t;
+      if (this.remote) {
+        CastStore.seek(t).catch(() => {});
+        this.scheduleHide();
+        return;
+      }
+      const player = this.$refs.video;
       if (player) player.currentTime = t;
       this.scheduleHide();
     },
@@ -752,9 +937,19 @@ const VideoPlayer = {
     /** Mouse scroll wheel over the player: adjust volume, show a % HUD */
     onWheel(e) {
       if (this.phase !== 'ready' || this.tagsOpen) return; // tag panel scrolls, not volume
+      const step = e.deltaY < 0 ? 0.05 : -0.05;
+      if (this.remote) {
+        const cur = this.muted ? 0 : this.playerVolume;
+        const next = Math.min(1, Math.max(0, cur + step));
+        if (next > 0) this.playerVolume = next;
+        this.muted = next === 0;
+        CastStore.setVolume(next).catch(() => {});
+        this.showVolHud();
+        this.showControls();
+        return;
+      }
       const player = this.$refs.video;
       if (!player) return;
-      const step = e.deltaY < 0 ? 0.05 : -0.05;
       const next = Math.min(1, Math.max(0, player.volume + step));
       player.volume = next;
       if (player.muted && (next > 0 || step > 0)) player.muted = false;
@@ -799,8 +994,14 @@ const VideoPlayer = {
       if (!player) return;
       switch (e.key) {
         case ' ': e.preventDefault(); this.togglePlay(); break;
-        case 'ArrowLeft': player.currentTime = Math.max(0, player.currentTime - 10); break;
-        case 'ArrowRight': player.currentTime = player.currentTime + 10; break;
+        case 'ArrowLeft':
+          if (this.remote) CastStore.seekRelative(-10).catch(() => {});
+          else player.currentTime = Math.max(0, player.currentTime - 10);
+          break;
+        case 'ArrowRight':
+          if (this.remote) CastStore.seekRelative(10).catch(() => {});
+          else player.currentTime = player.currentTime + 10;
+          break;
         case 'm': case 'M': this.toggleMute(); break;
         case 'f': case 'F': this.toggleFullscreen(); break;
         case 'l': case 'L': this.toggleLoop(); break;
@@ -951,6 +1152,40 @@ const VideoPlayer = {
       <video ref="video" class="video-el" playsinline preload="auto" v-show="!remote"
              @click="onVideoClick" @dblclick="onVideoDblClick"></video>
 
+      <!-- ── Remote-control panel (casting mode) ──────────────────────── -->
+      <div v-if="remote" class="remote-panel">
+        <div class="remote-badge">
+          <ui-icon name="cast" :size="18"></ui-icon>
+          <span>Casting to {{ receiverName }}</span>
+        </div>
+        <div class="remote-title">
+          {{ (cast.playback && cast.playback.title) || displayName }}
+        </div>
+        <div class="remote-status"
+             :class="{ 'remote-status-err': cast.error || (cast.playback && cast.playback.status === 'error'),
+                       'remote-status-ok': cast.playback && cast.playback.status === 'playing' }">
+          {{ remoteStatusText }}
+        </div>
+        <div class="remote-actions">
+          <button class="remote-btn" @click="remoteSeekRelative(-10)" title="Back 10 seconds">
+            <ui-icon name="fastRewind" :size="30"></ui-icon>
+          </button>
+          <button class="remote-btn remote-btn-main" @click="togglePlay"
+                  :title="isPlaying ? 'Pause' : 'Play'" :aria-label="isPlaying ? 'Pause' : 'Play'">
+            <ui-icon :name="isPlaying ? 'pause' : 'play'" :size="48"></ui-icon>
+          </button>
+          <button class="remote-btn" @click="remoteSeekRelative(10)" title="Forward 10 seconds">
+            <ui-icon name="fastForward" :size="30"></ui-icon>
+          </button>
+          <button class="remote-btn" @click="stopReceiver" title="Stop on receiver">
+            <ui-icon name="stop" :size="28"></ui-icon>
+          </button>
+        </div>
+        <button class="remote-disconnect" @click="watchHere">
+          <ui-icon name="close" :size="18"></ui-icon> Disconnect &amp; watch here
+        </button>
+      </div>
+
       <!-- ── Top bar: video title, wall clock, download/external/tags ── -->
       <transition name="vc-fade">
         <div v-show="phase === 'ready' && controlsVisible" class="vc-top" @click.stop>
@@ -999,6 +1234,9 @@ const VideoPlayer = {
         <button class="btn primary" @click="restart">
           <ui-icon name="restart" :size="20"></ui-icon> Restart playback
         </button>
+        <button v-if="remote" class="btn" @click="watchHere">
+          <ui-icon name="close" :size="20"></ui-icon> Disconnect and play locally
+        </button>
       </div>
 
       <!-- ── Custom control bar (UI only) ──────────────────────── -->
@@ -1007,10 +1245,10 @@ const VideoPlayer = {
 
         <div class="vc-seek-row">
           <span class="vc-time">{{ fmt(currentTime) }}</span>
-          <input class="vc-seek" type="range" min="0" :max="seekMax || 0" step="0.1"
-                 :value="currentTime" :disabled="!seekMax" :style="seekStyle()"
+          <input class="vc-seek" type="range" min="0" :max="displayDuration || 0" step="0.1"
+                 :value="currentTime" :disabled="!displayDuration" :style="seekStyle()"
                  @input="seekInput" @change="seekCommit" aria-label="Seek">
-          <span class="vc-time vc-time-dur">{{ fmt(seekMax) }}</span>
+          <span class="vc-time vc-time-dur">{{ fmt(displayDuration) }}</span>
         </div>
 
         <div class="vc-btn-row">
@@ -1126,6 +1364,9 @@ const VideoPlayer = {
         </div>
         <div v-else-if="s.showTranscodeInfo && stream && fullyCached" class="buffer-done">
           <ui-icon name="check" :size="18"></ui-icon> Fully buffered
+        </div>
+        <div v-else-if="s.showTranscodeInfo && remote" class="buffer-done">
+          <ui-icon name="cast" :size="18"></ui-icon> {{ activeConfig }}
         </div>
         <div v-else-if="s.showTranscodeInfo && useDirect" class="buffer-done">
           <ui-icon name="check" :size="18"></ui-icon> Direct play — no transcoding
