@@ -29,6 +29,24 @@ segment is transcoded when you reach it.
   (`data/tags.db`)
 - **Folder actions (⋮ menu on folder rows)** — download a whole folder
   as a ZIP file, or delete it (with its contents) after confirmation
+- **Home menu** — the landing page (root URL and the house icon) lists
+  your favorite folders (defaults: `/mnt`, `/media`) with an
+  Add button; favorites are stored server-side in `data/home.json`
+- **Cast to a Castor receiver** — send a video over the LAN to **Castor**,
+  the companion receiver app (it plays the URL or file path it is handed).
+  Cast from the button in the player's top bar, or from the ⋮ menu on any
+  video row. Receivers are discovered over mDNS (`_castor._tcp`) or added
+  by IP; each is configured as either **Local file** (the receiver runs on
+  this same host and reads the file directly) or **Transcode** (the
+  receiver is another device: formats it can't play are transcoded to HLS
+  on the fly, browser-compatible files stream as-is)
+- **Cast remote mode** — casting is a session, not a one-off: starting a
+  cast stops local playback and turns the player into a remote control for
+  the receiver (play/pause, seek and ±10 s, volume, fullscreen, quality).
+  Opening any other video keeps casting to the same receiver until you
+  press **Disconnect & watch here**; the session survives a reload, and
+  when the video ends the next file in the folder is cast automatically
+  (honours the “auto next” setting)
 - Dark / light themes, list/grid browsing, search and sorting
 
 ## Run directly (Node.js)
@@ -90,10 +108,51 @@ first use). In Docker it is persisted via the `srvfiles-data` volume.
 - `DELETE /api/folder?path=…` — delete a folder and all contents
   (filesystem roots are refused)
 
+## API (home menu)
+
+- `GET /api/home/folders` — favorite folders shown on the home page
+  (defaults to `/mnt` and `/media`; persisted in `data/home.json`)
+- `POST /api/home/folders` — add a favorite, body `{ path }` (must be an
+  existing directory); returns the updated list
+- `DELETE /api/home/folders?path=…` — remove a favorite;
+  returns the updated list
+
 ## API (for external players)
 
 - `GET /api/video/raw?path=/some/file.mp4` — the original file, with
   HTTP Range support (works in VLC's "Open Network Stream", etc.)
+
+## API (casting to a Castor receiver)
+
+- `GET /api/castor/receivers` — `{ discovered, saved }`: receivers found
+  over mDNS plus the ones saved in `data/castor-receivers.json` (probed
+  for online state)
+- `POST /api/castor/receivers` — add/update a receiver, body
+  `{ url, name?, mode?, pin? }` where `mode` is `local` or `remote`
+  (default); the URL is probed first and the request fails with 502 if no
+  receiver answers. `DELETE /api/castor/receivers?id=…` removes one
+- `POST /api/castor/cast` — cast a file, body
+  `{ path, receiverId | receiverUrl, mode }`; responds with the mode,
+  backend (`local-file` / `direct-file` / `hls-transcode`) and the
+  receiver's playback state
+- `POST /api/castor/command` — transport passthrough, body
+  `{ receiverId | receiverUrl, command, body? }` where `command` is one
+  of play/pause/stop/toggle/seek/seek-relative/volume/next/previous/
+  fullscreen
+- `GET /api/castor/state?receiverId=…|receiverUrl=…` — the receiver's
+  current playback state
+
+Client-side, the casting session lives in `public/js/castStore.js`
+(`CastStore.state`): the active receiver, the cast path, a 2 s poll of
+`/api/castor/state` and the transport commands. It is persisted to
+`localStorage` (`srvfiles-cast`) so remote mode survives reloads, and it
+drives auto-next by casting the next sibling file when the receiver goes
+`stopped`.
+
+Note: discovery needs LAN multicast, which a Docker **bridge** network
+blocks — run the container with `network_mode: host` (see
+`docker-compose.yml`) to enable it. Adding a receiver manually always
+works.
 
 ## Security
 
