@@ -119,7 +119,7 @@ const FileManager = {
       this.editingPath = false;
       try {
         if (this.s.rememberPath) {
-          try { localStorage.setItem('srvfiles-lastpath', dirPath); } catch (_) {}
+          try { localStorage.setItem('srvfiles-lastpath', dirPath); } catch {}
         }
         const data = await Utils.api('/api/browse?path=' + encodeURIComponent(dirPath));
         this.data = data;
@@ -138,7 +138,7 @@ const FileManager = {
     },
 
     async loadDrives() {
-      try { this.drives = await Utils.api('/api/drives'); } catch (_) {}
+      try { this.drives = await Utils.api('/api/drives'); } catch { /* header hides drives */ }
     },
 
     navigate(p) {

@@ -320,7 +320,7 @@ const VideoPlayer = {
         });
         this.hls.loadSource(this.stream.playlistUrl);
         this.hls.attachMedia(player);
-        this.hls.on(Hls.Events.ERROR, (event, data) => {
+        this.hls.on(Hls.Events.ERROR, (_event, data) => {
           if (!data.fatal) return;
           // Recoverable failures (e.g. seeked into an un-transcoded position,
           // or the transcode session expired): restart the stream seamlessly
@@ -439,7 +439,7 @@ const VideoPlayer = {
           this.fullyCached = true;
           this.stopStatusPolling();
         }
-      } catch (_) {
+      } catch {
         // stream probably expired
         this.stopStatusPolling();
       }
@@ -451,7 +451,7 @@ const VideoPlayer = {
         const videos = data.contents.filter(c => c.isVideo);
         this.folderVideos = videos;                              // ordered, for prev/next
         this.upNext = videos.filter(c => c.path !== this.path);  // for the list
-      } catch (_) { /* folder may be gone; ignore */ }
+      } catch { /* folder may be gone; ignore */ }
     },
 
     openVideo(item) {
@@ -751,7 +751,7 @@ const VideoPlayer = {
         await navigator.clipboard.writeText(this.rawUrl);
         this.copied = true;
         setTimeout(() => { this.copied = false; }, 2000);
-      } catch (_) {
+      } catch {
         // Fallback for browsers without clipboard permission
         const input = this.$refs.rawInput;
         if (input) { input.select(); document.execCommand('copy'); this.copied = true; setTimeout(() => { this.copied = false; }, 2000); }
@@ -777,7 +777,7 @@ const VideoPlayer = {
       this.tagsLoading = true;
       try {
         this.allTags = await Utils.api('/api/tags');
-      } catch (_) { /* keep previous list */ }
+      } catch { /* keep previous list */ }
       this.tagsLoading = false;
     },
 
@@ -786,7 +786,7 @@ const VideoPlayer = {
         const data = await Utils.api('/api/video/tags?path=' + encodeURIComponent(this.path));
         this.videoTagIds = data.tags || [];
         this.videoRating = data.rating == null ? null : data.rating;
-      } catch (_) {
+      } catch {
         this.videoTagIds = [];
         this.videoRating = null;
       }

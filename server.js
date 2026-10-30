@@ -20,7 +20,7 @@ function findFfmpeg() {
     try {
       const out = execSync(cmd + ' -version', { stdio: 'pipe' });
       if (out) return cmd;
-    } catch (_) {}
+    } catch {}
   }
   const paths = [
     'C:\\ffmpeg\\bin\\ffmpeg.exe',
@@ -42,7 +42,7 @@ function findFfprobe() {
   try {
     execSync('ffprobe -version', { stdio: 'pipe' });
     return 'ffprobe';
-  } catch (_) {}
+  } catch {}
   return null;
 }
 
@@ -109,7 +109,7 @@ function detectHwEncoder() {
         { stdio: 'pipe', timeout: 5000 }
       );
       return enc;
-    } catch (_) {}
+    } catch {}
   }
   return 'libx264';
 }
@@ -138,7 +138,7 @@ function detectHevcEncoder() {
       { stdio: 'pipe', timeout: 5000 }
     );
     return true;
-  } catch (_) {
+  } catch {
     return false;
   }
 }
@@ -161,9 +161,9 @@ function detectHwDecode() {
       );
       return ['-hwaccel', 'cuda'];
     } finally {
-      try { fs.unlinkSync(probe); } catch (_) {}
+      try { fs.unlinkSync(probe); } catch {}
     }
-  } catch (_) {
+  } catch {
     return [];
   }
 }
@@ -305,19 +305,11 @@ function fromHostPath(p) {
   return p;
 }
 
-function sanitizePath(rawPath) {
-  try {
-    return path.resolve(path.normalize(rawPath || ''));
-  } catch (_) {
-    return null;
-  }
-}
-
 function safePath(rawPath) {
   let sp;
   try {
     sp = path.resolve(path.normalize(rawPath || ''));
-  } catch (_) {
+  } catch {
     return null;
   }
   if (HOST_ROOT) {
@@ -452,9 +444,9 @@ class VideoStream {
       });
     }
     // Immediately start the first 3 segments in parallel
-    this.segments[0] && this._startTranscode(0);
-    this.segments[1] && this._startTranscode(1);
-    this.segments[2] && this._startTranscode(2);
+    if (this.segments[0]) this._startTranscode(0);
+    if (this.segments[1]) this._startTranscode(1);
+    if (this.segments[2]) this._startTranscode(2);
     // Then start background pipeline
     this._pipelineIndex = 3;
     this._pipelineActive = true;
@@ -630,7 +622,7 @@ class VideoStream {
           fs.writeFileSync(this.initPath, buf.slice(0, cut));
           fs.unlinkSync(probe);
           resolve(true);
-        } catch (_) {
+        } catch {
           resolve(false);
         }
       });
@@ -667,7 +659,7 @@ class VideoStream {
           resolve(true);
           return;
         }
-        try { fs.unlinkSync(seg.path); } catch (_) {}
+        try { fs.unlinkSync(seg.path); } catch {}
         // This segment was attempted with hardware decode and failed —
         // disable hw decoding for the whole stream and retry this segment
         // once with software decoding. Waiters stay queued and are notified
@@ -723,11 +715,11 @@ class VideoStream {
     this._pipelineActive = false;
     try {
       fs.rmSync(this.cacheDir, { recursive: true, force: true });
-    } catch (_) {}
+    } catch {}
   }
 }
 
-app.get('/api/drives', (req, res) => {
+app.get('/api/drives', (_req, res) => {
   if (process.platform === 'win32') {
     const drives = [];
     for (let c = 65; c <= 90; c++) {
@@ -737,7 +729,7 @@ app.get('/api/drives', (req, res) => {
         if (fs.existsSync(drivePath)) {
           drives.push({ name: drivePath, path: drivePath });
         }
-      } catch (_) {}
+      } catch {}
     }
     return res.json(drives);
   } else {
@@ -751,10 +743,10 @@ app.get('/api/drives', (req, res) => {
             const p = path.join(dir, item);
             try {
               if (fs.statSync(toHostPath(p)).isDirectory()) roots.push(p);
-            } catch (_) {}
+            } catch {}
           }
         }
-      } catch (_) {}
+      } catch {}
     }
     return res.json(roots.map(p => ({ name: p, path: p })));
   }
@@ -772,7 +764,7 @@ app.get('/api/browse', (req, res) => {
       if (dirent.name.startsWith('.')) continue;
       const fullPath = path.join(sp, dirent.name);
       let stat;
-      try { stat = fs.statSync(fullPath); } catch (_) { continue; }
+      try { stat = fs.statSync(fullPath); } catch { continue; }
       result.push({
         name: dirent.name,
         path: fromHostPath(fullPath),
@@ -810,7 +802,7 @@ app.get('/api/download/zip', (req, res) => {
     if (!fs.statSync(sp).isDirectory()) {
       return res.status(400).json({ error: 'Not a folder' });
     }
-  } catch (_) {
+  } catch {
     return res.status(400).json({ error: 'Invalid path' });
   }
   const base = path.basename(sp) || 'folder';
@@ -850,7 +842,7 @@ app.delete('/api/folder', (req, res) => {
     if (!fs.statSync(sp).isDirectory()) {
       return res.status(400).json({ error: 'Not a folder' });
     }
-  } catch (_) {
+  } catch {
     return res.status(400).json({ error: 'Invalid path' });
   }
   try {
@@ -1055,7 +1047,7 @@ function tagListPayload() {
   return { groups, ungrouped };
 }
 
-app.get('/api/tags', (req, res) => {
+app.get('/api/tags', (_req, res) => {
   if (!requireDb(res)) return;
   res.json(tagListPayload());
 });
