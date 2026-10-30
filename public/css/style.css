@@ -975,8 +975,8 @@ button {
 
 .info-config { font-weight: 600; color: var(--accent) !important; }
 
-/* Center feedback: play/pause icon burst */
-.center-icon {
+/* Center play/pause button: large, tappable, shown while the player UI is open */
+.vc-center {
   position: absolute;
   top: 50%;
   left: 50%;
@@ -985,32 +985,64 @@ button {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 96px;
-  height: 96px;
+  width: 104px;
+  height: 104px;
   border-radius: 50%;
   background: rgba(0, 0, 0, 0.55);
   color: #fff;
-  pointer-events: none;
+  transition: background 0.15s, transform 0.15s, opacity 0.25s;
 }
 
-.center-pop-enter-active {
-  animation: center-pop 0.65s ease forwards;
-}
-.center-pop-leave-active { display: none; }
+.vc-center:hover { background: rgba(0, 0, 0, 0.7); }
+.vc-center:active { transform: translate(-50%, -50%) scale(0.92); }
 
-@keyframes center-pop {
-  0% { opacity: 0; transform: translate(-50%, -50%) scale(0.6); }
-  25% { opacity: 1; transform: translate(-50%, -50%) scale(1.08); }
-  60% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
-  100% { opacity: 0; transform: translate(-50%, -50%) scale(1.2); }
-}
-
-.center-icon .ui-icon {
-  transform: translate(-50%, -50%);
+/* Top bar: title + wall clock + download/external/tags */
+.vc-top {
   position: absolute;
-  top: 50%;
-  left: 50%;
+  left: 0;
+  right: 0;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px 22px;
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.8), rgba(0, 0, 0, 0.45) 55%, transparent);
+  transition: opacity 0.25s;
 }
+
+.vc-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #fff;
+  font-size: 0.92rem;
+  font-weight: 600;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+}
+
+.vc-top-right {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.vc-clock {
+  color: #fff;
+  font-size: 0.85rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+  margin-right: 6px;
+}
+
+.vc-btn-sm { width: 40px; height: 40px; }
+
+/* Fade transition for the top bar (mirrors the bottom bar timing) */
+.vc-fade-enter-active, .vc-fade-leave-active { transition: opacity 0.25s; }
+.vc-fade-enter-from, .vc-fade-leave-to { opacity: 0; }
 
 /* Volume % HUD */
 .vol-hud {
@@ -1030,6 +1062,19 @@ button {
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   pointer-events: none;
+}
+
+/* Volume HUD pop transition (reuse of the old center-pop animation) */
+.center-pop-enter-active {
+  animation: center-pop 0.65s ease forwards;
+}
+.center-pop-leave-active { display: none; }
+
+@keyframes center-pop {
+  0% { opacity: 0; transform: translateX(-50%) scale(0.6); }
+  25% { opacity: 1; transform: translateX(-50%) scale(1.08); }
+  60% { opacity: 1; transform: translateX(-50%) scale(1); }
+  100% { opacity: 0; transform: translateX(-50%) scale(1.2); }
 }
 
 /* Volume slider: expands from the mute button on hover/interaction */

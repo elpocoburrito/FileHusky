@@ -54,8 +54,6 @@ const VideoPlayer = {
       playerVolume: 1,
       volHud: false,
       volHudTimer: null,
-      centerIcon: null,
-      centerIconTimer: null,
       loopOn: false,
       controlsVisible: true,
       hideTimer: null,
@@ -76,6 +74,9 @@ const VideoPlayer = {
       videoRating: null,       // 1–5 or null
       tagsLoading: false,
       isFullscreen: false,
+      wallClock: '',            // HH:MM readout for the top bar
+      clockTimer: null,
+      landscape: false,         // orientation lock active
     };
   },
 
@@ -200,6 +201,9 @@ const VideoPlayer = {
   async mounted() {
     document.addEventListener('keydown', this.onKey);
     document.addEventListener('fullscreenchange', this.onFullscreenChange);
+    document.addEventListener('orientationchange', this.onOrientationChange);
+    this.onOrientationChange();
+    this.startClock();
     await this.start();
     if (this.folder) this.loadUpNext();
     this.loadVideoTags();
@@ -208,6 +212,8 @@ const VideoPlayer = {
   beforeUnmount() {
     document.removeEventListener('keydown', this.onKey);
     document.removeEventListener('fullscreenchange', this.onFullscreenChange);
+    document.removeEventListener('orientationchange', this.onOrientationChange);
+    this.stopClock();
     this.clearHideTimer();
     this.savePosition();
     this.cleanup();
@@ -535,6 +541,14 @@ const VideoPlayer = {
       this.playerVolume = player.volume;
     },
 
+    // Heuristic: true when the primary input is touch (phones/tablets).
+    // Used to show the orientation button; combined with isFullscreen in
+    // the template so it never appears on desktop.
+    isTouchDevice() {
+      return (typeof window !== 'undefined' &&
+        ('ontouchstart' in window || (navigator.maxTouchPoints || 0) > 0));
+    },
+
     onBufferUi() {
       const player = this.$refs.video;
       if (!player || !this.seekMax) return;
@@ -550,17 +564,8 @@ const VideoPlayer = {
     togglePlay() {
       const player = this.$refs.video;
       if (!player) return;
-      const wasPaused = player.paused;
-      if (wasPaused) player.play().catch(() => {});
+      if (player.paused) player.play().catch(() => {});
       else player.pause();
-      this.pulseCenterIcon(wasPaused ? 'play' : 'pause');
-    },
-
-    /** Brief centered play/pause icon burst (user-initiated toggles) */
-    pulseCenterIcon(icon) {
-      this.centerIcon = icon;
-      clearTimeout(this.centerIconTimer);
-      this.centerIconTimer = setTimeout(() => { this.centerIcon = null; }, 650);
     },
 
     toggleMute() {
@@ -635,20 +640,28 @@ const VideoPlayer = {
 
     onVideoClick() {
       this.qualityOpen = false;
-      // Touch: tap toggles the control bar. Mouse/keyboard: click toggles
-      // play/pause (desktop convention) — but wait briefly so a double-click
-      // can toggle fullscreen instead (the pending toggle is cancelled).
-      if (this.lastPointerType === 'mouse') {
+      // The click event itself carries no pointerType (plain MouseEvent), so
+      // we use the pointer type captured at pointerdown (always fires first).
+      const isTouch = this._downPointerType && this._downPointerType !== 'mouse';
+      // Touch: tap toggles the player UI (bars + center play/pause).
+      // Mouse: click toggles play/pause (desktop convention), unless a
+      // double-click is in progress — that toggles fullscreen instead.
+      if (isTouch) {
+        this.togglePlayerUi();
+      } else {
         if (this._clickTimer) return; // second click — the dblclick handler takes over
         this._clickTimer = setTimeout(() => {
           this._clickTimer = null;
           this.togglePlay();
         }, 260);
-      } else {
-        this.controlsVisible = !this.controlsVisible;
-        if (this.controlsVisible) this.scheduleHide();
-        else this.clearHideTimer();
       }
+    },
+
+    /** Show/hide the player UI overlay (top bar, bottom bar, center button) */
+    togglePlayerUi() {
+      this.controlsVisible = !this.controlsVisible;
+      if (this.controlsVisible) this.scheduleHide();
+      else this.clearHideTimer();
     },
 
     /** Mouse double-click on the video: enter/exit fullscreen */
@@ -658,18 +671,71 @@ const VideoPlayer = {
       this.toggleFullscreen();
     },
 
-    /** Mouse moved over the player — reveal controls (desktop) */
+    /** Pointer/mouse moved over the player — reveal controls (desktop) */
     onPointerMove(e) {
       if (e.pointerType && e.pointerType !== 'mouse') return;
       this.lastPointerType = 'mouse';
       if (this.phase === 'ready') this.showControls();
     },
 
+    /** Record the pointer type at press time (used by onVideoClick) */
+    onPointerDown(e) {
+      this._downPointerType = e.pointerType || 'mouse';
+      if (this._downPointerType === 'mouse') this.onPointerMove(e);
+    },
+
     /** Mouse left the player — hide sooner than the touch idle timer */
     onMouseLeave() {
+      if (this.lastPointerType !== 'mouse') return;
       if (!this.isPlaying) return; // paused keeps controls visible anyway
       this.clearHideTimer();
       this.hideTimer = setTimeout(() => { this.controlsVisible = false; }, 800);
+    },
+
+    // ── Wall-clock readout (top bar) ──────────────────────────────────
+    startClock() {
+      const tick = () => {
+        const d = new Date();
+        this.wallClock = String(d.getHours()).padStart(2, '0') + ':' +
+          String(d.getMinutes()).padStart(2, '0');
+      };
+      tick();
+      this.clockTimer = setInterval(tick, 15000);
+    },
+
+    stopClock() {
+      if (this.clockTimer) { clearInterval(this.clockTimer); this.clockTimer = null; }
+    },
+
+    // ── Orientation (mobile only) ────────────────────────────────────
+    onOrientationChange() {
+      const type = (screen.orientation && screen.orientation.type) || '';
+      this.landscape = type.startsWith('landscape');
+    },
+
+    /**
+     * Toggle orientation lock landscape/portrait. Only shown in fullscreen
+     * on touch devices. Chrome/Android support the lock API; iOS Safari
+     * does not — there we rely on fullscreen + the device's auto-rotate.
+     */
+    async toggleOrientation() {
+      const want = this.landscape ? 'portrait' : 'landscape';
+      try {
+        if (screen.orientation && screen.orientation.lock) {
+          await screen.orientation.lock(want);
+          this.landscape = want === 'landscape';
+          return;
+        }
+      } catch { /* lock refused — fall through to fullscreen fallback */ }
+      // Fallback (iOS): cycle fullscreen so the OS auto-rotate can take over.
+      try {
+        if (document.fullscreenElement) {
+          await document.exitFullscreen();
+          if (this.$refs.videoArea && this.$refs.videoArea.requestFullscreen) {
+            await this.$refs.videoArea.requestFullscreen();
+          }
+        }
+      } catch { /* nothing else we can do */ }
     },
 
     /** Download the original file via the existing raw endpoint (no re-encode) */
@@ -878,18 +944,40 @@ const VideoPlayer = {
 
     <!-- ── Sticky video area ─────────────────────────────────────────── -->
     <div class="video-area" ref="videoArea"
-         @mousemove="onPointerMove" @pointerdown="onPointerMove"
+         @pointerdown="onPointerDown" @mousemove="onPointerMove"
          @mouseleave="onMouseLeave" @wheel.prevent="onWheel"
          :class="{ 'vc-hide-cursor': !controlsVisible }">
-      <video ref="video" class="video-el" playsinline preload="auto"
+      <video ref="video" class="video-el" playsinline preload="auto" v-show="!remote"
              @click="onVideoClick" @dblclick="onVideoDblClick"></video>
 
-      <!-- ── Center feedback: play/pause burst ───────────────────── -->
-      <transition name="center-pop">
-        <div v-if="centerIcon" class="center-icon" :key="centerIcon">
-          <ui-icon :name="centerIcon" :size="76"></ui-icon>
+      <!-- ── Top bar: video title, wall clock, download/external/tags ── -->
+      <transition name="vc-fade">
+        <div v-show="phase === 'ready' && controlsVisible" class="vc-top" @click.stop>
+          <span class="vc-title">{{ displayName }}</span>
+          <div class="vc-top-right">
+            <span class="vc-clock">{{ wallClock }}</span>
+            <button class="vc-btn vc-btn-sm" @click="doSaveVideo" title="Save video (original file)">
+              <ui-icon name="download" :size="22"></ui-icon>
+            </button>
+            <button class="vc-btn vc-btn-sm" @click="castOpen = true" title="Cast to receiver">
+              <ui-icon name="cast" :size="22"></ui-icon>
+            </button>
+            <button class="vc-btn vc-btn-sm" @click="externalOpen = true" title="Open in external player">
+              <ui-icon name="openExternal" :size="22"></ui-icon>
+            </button>
+            <button class="vc-btn vc-btn-sm" :class="{ 'vc-btn-on': tagsOpen }" @click="toggleTags"
+                    title="Tags & rating">
+              <ui-icon name="label" :size="22"></ui-icon>
+            </button>
+          </div>
         </div>
       </transition>
+
+      <!-- ── Center play/pause button (visible when the player UI is open) ── -->
+      <button v-show="phase === 'ready' && controlsVisible && !remote" class="vc-center" @click.stop="togglePlay"
+              :title="isPlaying ? 'Pause' : 'Play'" :aria-label="isPlaying ? 'Pause' : 'Play'">
+        <ui-icon :name="isPlaying ? 'pause' : 'play'" :size="72"></ui-icon>
+      </button>
 
       <!-- ── Volume % HUD (scrollwheel / slider) ─────────────────── -->
       <transition name="center-pop">
@@ -929,9 +1017,6 @@ const VideoPlayer = {
             <button class="vc-btn" :disabled="!prevVideo" @click="goPrev" title="Previous video">
               <ui-icon name="skipPrev" :size="26"></ui-icon>
             </button>
-            <button class="vc-btn vc-btn-play" @click="togglePlay" :title="isPlaying ? 'Pause' : 'Play'">
-              <ui-icon :name="isPlaying ? 'pause' : 'play'" :size="30"></ui-icon>
-            </button>
             <button class="vc-btn" :disabled="!nextVideo" @click="goNext" title="Next video">
               <ui-icon name="skipNext" :size="26"></ui-icon>
             </button>
@@ -946,22 +1031,17 @@ const VideoPlayer = {
           </div>
 
           <div class="vc-group">
-            <button class="vc-btn" @click="doSaveVideo" title="Save video (original file)">
-              <ui-icon name="download" :size="24"></ui-icon>
-            </button>
             <button class="vc-btn" @click="qualityOpen = !qualityOpen" title="Playback quality">
               <ui-icon name="tune" :size="24"></ui-icon>
             </button>
-            <button class="vc-btn" :class="{ 'vc-btn-on': loopOn }" @click="toggleLoop"
+            <button v-if="!remote" class="vc-btn" :class="{ 'vc-btn-on': loopOn }" @click="toggleLoop"
                     :title="loopOn ? 'Loop on — tap to stop looping' : 'Loop this video'">
               <ui-icon name="loop" :size="24"></ui-icon>
             </button>
-            <button class="vc-btn" @click="externalOpen = true" title="Open in external player">
-              <ui-icon name="openExternal" :size="24"></ui-icon>
-            </button>
-            <button class="vc-btn" :class="{ 'vc-btn-on': tagsOpen }" @click="toggleTags"
-                    title="Tags & rating">
-              <ui-icon name="label" :size="24"></ui-icon>
+            <button v-if="!remote && isTouchDevice && isFullscreen" class="vc-btn"
+                    :class="{ 'vc-btn-on': landscape }" @click="toggleOrientation"
+                    :title="landscape ? 'Switch to portrait' : 'Switch to landscape'">
+              <ui-icon name="screenRotation" :size="24"></ui-icon>
             </button>
             <button class="vc-btn" @click="toggleFullscreen" title="Fullscreen">
               <ui-icon name="fullscreen" :size="26"></ui-icon>
