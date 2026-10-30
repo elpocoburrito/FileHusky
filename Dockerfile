@@ -21,6 +21,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
 COPY server.js ./
+COPY castor-mdns.js ./
 COPY public ./public
 
 ENV PORT=3000 \

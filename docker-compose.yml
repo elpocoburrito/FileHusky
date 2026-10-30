@@ -16,6 +16,13 @@ services:
     restart: unless-stopped
     ports:
       - "3003:3000"
+    # NOTE on Castor receiver discovery: with the default bridge network,
+    # mDNS (_castor._tcp) from inside the container cannot reach the LAN,
+    # so receiver auto-discovery finds nothing. To enable it, replace the
+    # `ports` mapping above with:
+    #   network_mode: host
+    # and set PORT: 3003 in `environment` (the server then binds :3003
+    # directly on the host). Manual receiver entry in the UI works either way.
     environment:
       # Where the host filesystem is mounted inside the container
       HOST_ROOT: /host

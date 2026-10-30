@@ -19,6 +19,11 @@ const FileManager = {
       editPathText: '',
       editingPath: false,
       menuFor: null,        // path of the folder whose context menu is open
+      // cast-to-receiver modal (opened from a video row menu)
+      castOpen: false,
+      castPath: '',
+      castName: '',
+      castFolder: '',
       // scroll position memory, keyed by folder path (shared across instances)
       _scrollMem: FileManager._scrollMem || (FileManager._scrollMem = {}),
     };
@@ -233,6 +238,15 @@ const FileManager = {
         alert('Delete failed: ' + e.message);
       }
     },
+
+    // ── Cast to a Castor receiver (video row menu) ─────────────────
+    castItem(item) {
+      this.closeMenu();
+      this.castPath = item.path;
+      this.castName = item.name;
+      this.castFolder = this.data ? this.data.path : '';
+      this.castOpen = true;
+    },
   },
 
   template: `
@@ -352,7 +366,7 @@ const FileManager = {
 
       <!-- ── File list ───────────────────────────────────────────────── -->
       <ul v-else-if="s.viewMode === 'list'" class="file-list">
-        <li v-for="item in visibleItems" :key="item.path" :class="{ 'has-menu': item.isDirectory }">
+        <li v-for="item in visibleItems" :key="item.path" :class="{ 'has-menu': item.isDirectory || item.isVideo }">
           <button class="file-row" @click="openItem(item)">
             <span class="file-icon" :class="item.isDirectory ? 'is-folder' : (item.isVideo ? 'is-video' : (item.isImage ? 'is-image' : 'is-file'))">
               <ui-icon :name="itemIcon(item)" :size="26"></ui-icon>
@@ -365,20 +379,24 @@ const FileManager = {
             <ui-icon v-else-if="item.isDirectory" name="chevronRight" :size="22" class="file-chevron"></ui-icon>
           </button>
 
-          <!-- Folder context menu (⋮) -->
-          <template v-if="item.isDirectory">
+          <!-- Row context menu (⋮): folder actions / video cast -->
+          <template v-if="item.isDirectory || item.isVideo">
             <button class="row-menu-btn" @click.stop="toggleMenu(item)"
-                    title="Folder actions" aria-label="Folder actions">
+                    :title="item.isDirectory ? 'Folder actions' : 'Video actions'" :aria-label="item.isDirectory ? 'Folder actions' : 'Video actions'">
               <ui-icon name="moreVert" :size="20"></ui-icon>
             </button>
             <div v-if="menuFor === item.path" class="row-menu">
-              <button class="row-menu-item" @click="downloadZip(item)">
+              <button v-if="item.isDirectory" class="row-menu-item" @click="downloadZip(item)">
                 <ui-icon name="download" :size="18"></ui-icon>
                 <span>Download as ZIP</span>
               </button>
-              <button class="row-menu-item danger" @click="deleteFolder(item)">
+              <button v-if="item.isDirectory" class="row-menu-item danger" @click="deleteFolder(item)">
                 <ui-icon name="delete" :size="18"></ui-icon>
                 <span>Delete folder…</span>
+              </button>
+              <button v-if="item.isVideo" class="row-menu-item" @click="castItem(item)">
+                <ui-icon name="cast" :size="18"></ui-icon>
+                <span>Cast to receiver…</span>
               </button>
             </div>
           </template>
@@ -396,26 +414,34 @@ const FileManager = {
             <span v-if="item.isVideo" class="grid-play"><ui-icon name="play" :size="18"></ui-icon></span>
           </button>
 
-          <!-- Folder context menu (⋮) -->
-          <template v-if="item.isDirectory">
+          <!-- Row context menu (⋮): folder actions / video cast -->
+          <template v-if="item.isDirectory || item.isVideo">
             <button class="row-menu-btn grid" @click.stop="toggleMenu(item)"
-                    title="Folder actions" aria-label="Folder actions">
+                    :title="item.isDirectory ? 'Folder actions' : 'Video actions'" :aria-label="item.isDirectory ? 'Folder actions' : 'Video actions'">
               <ui-icon name="moreVert" :size="18"></ui-icon>
             </button>
             <div v-if="menuFor === item.path" class="row-menu">
-              <button class="row-menu-item" @click="downloadZip(item)">
+              <button v-if="item.isDirectory" class="row-menu-item" @click="downloadZip(item)">
                 <ui-icon name="download" :size="18"></ui-icon>
                 <span>Download as ZIP</span>
               </button>
-              <button class="row-menu-item danger" @click="deleteFolder(item)">
+              <button v-if="item.isDirectory" class="row-menu-item danger" @click="deleteFolder(item)">
                 <ui-icon name="delete" :size="18"></ui-icon>
                 <span>Delete folder…</span>
+              </button>
+              <button v-if="item.isVideo" class="row-menu-item" @click="castItem(item)">
+                <ui-icon name="cast" :size="18"></ui-icon>
+                <span>Cast to receiver…</span>
               </button>
             </div>
           </template>
         </div>
       </div>
     </main>
+
+    <!-- ── Cast-to-receiver modal ───────────────────────────────────── -->
+    <cast-panel v-if="castOpen" :path="castPath" :file-name="castName" :folder="castFolder"
+                @close="castOpen = false"></cast-panel>
   </div>
   `,
 };

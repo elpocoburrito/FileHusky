@@ -1,6 +1,6 @@
 /* ─── VideoPlayer: dedicated playback page ───────────────────────────────── */
 
-/* global Vue, Utils, SettingsStore, Hls */
+/* global Vue, Utils, SettingsStore, Hls, CastStore */
 
 const VIDEO_EXT_DIRECT = new Set(['.mp4', '.m4v', '.mov', '.webm', '.m4v']);
 const DIRECT_VIDEO_CODECS = new Set(['h264', 'vp9', 'av1']);
@@ -62,6 +62,7 @@ const VideoPlayer = {
       bufferedPercent: 0,
       scrubbing: false,
       externalOpen: false,
+      castOpen: false,
       copied: false,
       qualityOpen: false,
       pendingSeek: 0,          // restart-at-position (quality change)
@@ -1148,6 +1149,10 @@ const VideoPlayer = {
         </ul>
       </section>
     </main>
+
+    <!-- ── Cast-to-receiver modal ───────────────────────────────────── -->
+    <cast-panel v-if="castOpen" :path="path" :file-name="displayName" :folder="folder"
+                @close="castOpen = false"></cast-panel>
 
     <!-- ── External player modal ─────────────────────────────────────── -->
     <div v-if="externalOpen" class="modal-root" @click.self="externalOpen = false">

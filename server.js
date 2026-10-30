@@ -947,26 +947,32 @@ app.get('/api/video/stream/start', async (req, res) => {
   if (!sp) return res.status(400).json({ error: 'Invalid path' });
   if (!FFMPEG || !FFPROBE) return res.status(500).json({ error: 'ffmpeg/ffprobe not found' });
   try {
-    const id = crypto.randomUUID().replace(/-/g, '').slice(0, 12);
-    const encOptions = parseEncOptions(req.query);
-    const stream = new VideoStream(id, sp, encOptions);
-    await stream.init();
-    streams.set(id, stream);
-    touchStream(id);
+    const stream = await startStreamSession(sp, req.query);
     res.json({
-      streamId: id,
+      streamId: stream.id,
       duration: stream.metadata.duration,
       width: stream.metadata.width,
       height: stream.metadata.height,
       codec: stream.metadata.codec,
       fps: stream.metadata.fps,
       segments: stream.segments.length,
-      playlistUrl: '/api/video/stream/' + id + '/playlist.m3u8'
+      playlistUrl: '/api/video/stream/' + stream.id + '/playlist.m3u8'
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
+
+/** Create a transcoding session for a file (shared by player + cast flows). */
+async function startStreamSession(sp, query) {
+  const id = crypto.randomUUID().replace(/-/g, '').slice(0, 12);
+  const encOptions = parseEncOptions(query);
+  const stream = new VideoStream(id, sp, encOptions);
+  await stream.init();
+  streams.set(id, stream);
+  touchStream(id);
+  return stream;
+}
 
 /** Reset the idle-expiry timer for a stream session (client is active). */
 function touchStream(streamId) {
@@ -998,23 +1004,19 @@ app.get('/api/video/stream/:id/segment-:index.m4s', serveSegment);
 app.get('/api/video/stream/:id/init.mp4', async (req, res) => {
   const stream = streams.get(req.params.id);
   if (!stream) return res.status(404).json({ error: 'Stream not found' });
-  if (stream.encOptions.format !== 'fmp4') return res.status(404).json({ error: 'Not an fMP4 stream' });
-  const ok = await stream._ensureInit();
-  if (!ok || !fs.existsSync(stream.initPath)) return res.status(500).json({ error: 'Failed to generate init segment' });
-  res.set({
-    'Content-Type': 'video/mp4',
-    'Cache-Control': 'public, max-age=3600',
-    'Access-Control-Allow-Origin': '*'
-  });
-  fs.createReadStream(stream.initPath).pipe(res);
+  serveStreamInit(stream, res);
 });
 
 async function serveSegment(req, res) {
   const stream = streams.get(req.params.id);
   if (!stream) return res.status(404).json({ error: 'Stream not found' });
-  touchStream(req.params.id); // client is actively fetching — keep session alive
   const index = parseInt(req.params.index);
   if (isNaN(index)) return res.status(400).json({ error: 'Invalid segment index' });
+  await serveStreamSegment(stream, index, res);
+}
+
+async function serveStreamSegment(stream, index, res) {
+  touchStream(stream.id); // client is actively fetching — keep session alive
   const ok = await stream.ensureSegment(index);
   if (!ok) return res.status(500).json({ error: 'Failed to transcode segment' });
   const segPath = stream.segments[index] ? stream.segments[index].path : null;
@@ -1027,6 +1029,18 @@ async function serveSegment(req, res) {
     'Access-Control-Allow-Origin': '*'
   });
   fs.createReadStream(segPath).pipe(res);
+}
+
+async function serveStreamInit(stream, res) {
+  if (stream.encOptions.format !== 'fmp4') return res.status(404).json({ error: 'Not an fMP4 stream' });
+  const ok = await stream._ensureInit();
+  if (!ok || !fs.existsSync(stream.initPath)) return res.status(500).json({ error: 'Failed to generate init segment' });
+  res.set({
+    'Content-Type': 'video/mp4',
+    'Cache-Control': 'public, max-age=3600',
+    'Access-Control-Allow-Origin': '*'
+  });
+  fs.createReadStream(stream.initPath).pipe(res);
 }
 
 app.get('/api/video/stream/:id/status', (req, res) => {
@@ -1043,6 +1057,306 @@ app.get('/api/video/stream/:id/status', (req, res) => {
     duration: stream.metadata ? stream.metadata.duration : 0,
     progress: stream.segments.length > 0 ? (cachedCount / stream.segments.length * 100).toFixed(1) + '%' : '0%'
   });
+});
+
+// ─── Cast-friendly URLs (used when casting to a Castor receiver) ──────────
+//   /api/video/cast/<name>       → original file, Range-supported (?path=…)
+//   /api/video/cast/<name>.m3u8  → HLS playlist of a running session (?session=…)
+// The pretty last path segment becomes the receiver's display title; for HLS
+// the explicit `title` sent with the cast overrides it anyway.
+app.get('/api/video/cast/:name', (req, res) => {
+  const name = String(req.params.name || '');
+  const stream = streams.get(String(req.query.session || ''));
+  // Stream parts: the playlist references segments relatively, and relative
+  // URL resolution drops the base's ?session= query — so this route serves
+  // seg-N.m4s / seg-N.ts / init.mp4 for a running session as well.
+  const segMatch = name.match(/^segment-(\d+)\.(m4s|ts)$/);
+  if (segMatch) {
+    if (!stream) return res.status(404).json({ error: 'Stream not found' });
+    return serveStreamSegment(stream, parseInt(segMatch[1]), res);
+  }
+  if (name === 'init.mp4') {
+    if (!stream) return res.status(404).json({ error: 'Stream not found' });
+    return serveStreamInit(stream, res);
+  }
+  if (name.toLowerCase().endsWith('.m3u8')) {
+    if (!stream) return res.status(404).json({ error: 'Stream not found' });
+    touchStream(stream.id);
+    const playlist = stream.getPlaylist();
+    if (!playlist) return res.status(500).json({ error: 'Failed to generate playlist' });
+    // Stamp every referenced part with the session id: hls.js resolves the
+    // playlist's relative URIs WITHOUT the playlist URL's query string.
+    const stamped = playlist
+      .replace(/(segment-\d+\.(?:m4s|ts))/g, '$1?session=' + stream.id)
+      .replace(/(init\.mp4)/g, '$1?session=' + stream.id);
+    res.set({
+      'Content-Type': 'application/vnd.apple.mpegurl',
+      'Cache-Control': 'no-cache',
+      'Access-Control-Allow-Origin': '*'
+    });
+    return res.send(stamped);
+  }
+  const sp = safePath(req.query.path);
+  if (!sp) return res.status(400).json({ error: 'Invalid path' });
+  // sendFile supports HTTP Range requests so the receiver can seek
+  res.sendFile(sp, (err) => {
+    if (err && !res.headersSent) res.status(500).json({ error: err.message });
+  });
+});
+
+// ═══ Castor receivers (cast-to-TV targets) ════════════════════════════════
+// Castor (github repo: Castor) is the user's LAN playback receiver. It
+// exposes POST /api/cast {module, target} on port 8642. Two cast modes:
+// - local   → receiver runs on the same host as this server (e.g. the Docker
+//             host): it gets the file PATH and reads it directly. The
+//             client-facing path already matches the host filesystem because
+//             the HOST_ROOT mount prefix is stripped, so Castor's `local`
+//             module finds the file (and transcodes via CASTOR_FILESERVER
+//             if the format needs it).
+// - remote  → receiver on another device: it gets an http(s) URL served by
+//             this server. Browser-compatible files stream as the original
+//             file (`direct`); everything else is transcoded to HLS via the
+//             session API above (Castor plays .m3u8 through hls.js).
+
+const castorMdns = require('./castor-mdns');
+const CASTOR_FILE = path.join(__dirname, 'data', 'castor-receivers.json');
+let castorSaved = [];
+try { castorSaved = JSON.parse(fs.readFileSync(CASTOR_FILE, 'utf8')); } catch { /* first run */ }
+if (!Array.isArray(castorSaved)) castorSaved = [];
+
+function saveCastorReceivers() {
+  fs.mkdirSync(path.join(__dirname, 'data'), { recursive: true });
+  fs.writeFileSync(CASTOR_FILE, JSON.stringify(castorSaved, null, 2));
+}
+
+let castorBrowseCache = { at: 0, list: [] };
+async function castorDiscovered() {
+  if (Date.now() - castorBrowseCache.at < 5000) return castorBrowseCache.list;
+  try {
+    castorBrowseCache = { at: Date.now(), list: await castorMdns.browse(2500) };
+  } catch (err) {
+    console.warn('Castor mDNS browse failed: ' + err.message);
+    castorBrowseCache = { at: Date.now(), list: [] };
+  }
+  return castorBrowseCache.list;
+}
+
+function normalizeReceiverUrl(u) {
+  const s = String(u || '').trim().replace(/\/+$/, '');
+  if (!/^https?:\/\//i.test(s)) return null;
+  try { if (!new URL(s).hostname) return null; } catch { return null; }
+  return s;
+}
+
+async function probeReceiver(url) {
+  try {
+    const r = await fetch(url + '/api/info', { signal: AbortSignal.timeout(3000) });
+    if (!r.ok) return null;
+    const info = await r.json();
+    return { name: info.name || 'Castor receiver', state: info.state || null };
+  } catch {
+    return null;
+  }
+}
+
+/** Resolve the cast target receiver from receiverId / receiverUrl (+ overrides). */
+function resolveReceiver(q) {
+  if (q.receiverId != null && q.receiverId !== '') {
+    const found = castorSaved.find(r => String(r.id) === String(q.receiverId));
+    if (found) return q.mode ? { ...found, mode: q.mode } : found;
+  }
+  const url = normalizeReceiverUrl(q.receiverUrl);
+  if (!url) return null;
+  const found = castorSaved.find(r => r.url === url);
+  if (found) return q.mode ? { ...found, mode: q.mode } : found;
+  return {
+    id: null,
+    url,
+    name: String(q.receiverName || url),
+    mode: q.mode === 'local' ? 'local' : 'remote',
+    pin: String(q.pin || ''),
+  };
+}
+
+// Containers Chromium cannot decode natively (mirrors Castor's decideSource);
+// these always go through the HLS transcode path when cast remotely.
+const CAST_TRANSCODE_EXT = new Set([
+  '.mkv', '.avi', '.wmv', '.flv', '.mpg', '.mpeg', '.ts', '.m2ts', '.3gp',
+  '.vob', '.rm', '.rmvb', '.divx', '.xvid', '.ogv',
+]);
+const CAST_DIRECT_EXT = new Set(['.mp4', '.m4v', '.webm', '.mov']);
+const CAST_DIRECT_VIDEO = new Set(['h264', 'vp8', 'vp9', 'av1']);
+const CAST_DIRECT_AUDIO = new Set(['aac', 'mp3', 'opus', 'vorbis', 'flac']);
+
+/** Decide how a file reaches a remote receiver: original file or HLS. */
+async function decideRemoteCast(sp) {
+  const ext = path.extname(sp).toLowerCase();
+  if (CAST_TRANSCODE_EXT.has(ext)) return 'hls';
+  if (!CAST_DIRECT_EXT.has(ext) || !FFPROBE) return 'hls';
+  try {
+    const meta = await getVideoMetadata(sp);
+    const okVideo = CAST_DIRECT_VIDEO.has(meta.codec);
+    const okAudio = !meta.audioCodec || CAST_DIRECT_AUDIO.has(meta.audioCodec);
+    if (okVideo && okAudio) return 'raw';
+  } catch { /* fall through to transcode */ }
+  return 'hls';
+}
+
+function castorHeaders(receiver) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (receiver.pin) headers['X-Castor-Pin'] = receiver.pin;
+  return headers;
+}
+
+app.get('/api/castor/receivers', async (_req, res) => {
+  const discovered = await castorDiscovered();
+  // Probe saved receivers in parallel so the UI can show online/state.
+  const saved = await Promise.all(castorSaved.map(async (r) => {
+    const info = await probeReceiver(r.url);
+    return { ...r, pin: undefined, online: !!info, name: r.name || (info && info.name) || r.url, state: info ? info.state : null };
+  }));
+  const savedUrls = new Set(castorSaved.map(r => r.url));
+  res.json({
+    discovered: discovered.map(d => ({ ...d, saved: savedUrls.has(d.url) })),
+    saved,
+  });
+});
+
+app.post('/api/castor/receivers', async (req, res) => {
+  const body = req.body || {};
+  const url = normalizeReceiverUrl(body.url);
+  if (!url) return res.status(400).json({ error: 'A http(s):// receiver URL is required' });
+  const mode = body.mode === 'local' ? 'local' : 'remote';
+  const info = await probeReceiver(url);
+  if (!info) return res.status(502).json({ error: 'No Castor receiver answered at ' + url + ' (is it running?)' });
+  const entry = {
+    id: crypto.randomUUID(),
+    url,
+    name: String(body.name || info.name || url),
+    mode,
+    pin: String(body.pin || ''),
+  };
+  const existing = castorSaved.find(r => r.url === url);
+  if (existing) Object.assign(existing, entry, { id: existing.id });
+  else castorSaved.push(entry);
+  saveCastorReceivers();
+  const savedEntry = { ...entry, pin: undefined, online: true, state: info.state };
+  res.json(existing ? { ok: true, updated: true, receiver: savedEntry } : { ok: true, receiver: savedEntry });
+});
+
+app.delete('/api/castor/receivers', (req, res) => {
+  const before = castorSaved.length;
+  castorSaved = castorSaved.filter(r => String(r.id) !== String(req.query.id));
+  if (castorSaved.length === before) return res.status(404).json({ error: 'Receiver not found' });
+  saveCastorReceivers();
+  res.json({ ok: true });
+});
+
+app.post('/api/castor/cast', async (req, res) => {
+  const body = req.body || {};
+  const receiver = resolveReceiver(body);
+  if (!receiver) return res.status(400).json({ error: 'Unknown receiver (receiverId or receiverUrl required)' });
+  const sp = safePath(body.path);
+  if (!sp) return res.status(400).json({ error: 'Invalid path' });
+  const mode = body.mode === 'local' ? 'local' : 'remote';
+  const title = path.basename(sp);
+  let backend;
+
+  let castBody;
+  if (mode === 'local') {
+    // Same-host receiver: hand it the file path as it exists on the host.
+    castBody = { module: 'local', target: path.resolve('/' + body.path).replace(/^([a-zA-Z]:)/, '$1'), autoplay: true, title };
+    backend = 'local-file';
+  } else {
+    const decision = await decideRemoteCast(sp);
+    backend = decision === 'hls' ? 'hls-transcode' : 'direct-file';
+    const base = req.protocol + '://' + (req.get('host') || 'localhost');
+    const namePart = encodeURIComponent(title);
+    if (decision === 'raw') {
+      castBody = {
+        module: 'direct',
+        target: base + '/api/video/cast/' + namePart + '?path=' + encodeURIComponent(body.path),
+        autoplay: true,
+        title,
+      };
+    } else {
+      if (!FFMPEG || !FFPROBE) return res.status(500).json({ error: 'ffmpeg/ffprobe not found — remote transcoding unavailable' });
+      let stream;
+      try {
+        stream = await startStreamSession(sp, {});
+      } catch (err) {
+        return res.status(500).json({ error: 'Transcode failed to start: ' + err.message });
+      }
+      castBody = {
+        module: 'direct',
+        target: base + '/api/video/cast/' + namePart + '.m3u8?session=' + stream.id,
+        autoplay: true,
+        title,
+      };
+    }
+  }
+
+  let rr;
+  try {
+    rr = await fetch(receiver.url + '/api/cast', {
+      method: 'POST',
+      headers: castorHeaders(receiver),
+      body: JSON.stringify(castBody),
+      signal: AbortSignal.timeout(20000),
+    });
+  } catch (err) {
+    return res.status(502).json({ error: 'Receiver unreachable: ' + err.message });
+  }
+  const data = await rr.json().catch(() => ({}));
+  if (!rr.ok) {
+    return res.status(502).json({ error: data.error || 'Receiver rejected the cast (HTTP ' + rr.status + ')', code: data.code });
+  }
+  res.json({
+    ok: true,
+    mode,
+    backend,
+    target: castBody.target,
+    receiver: { id: receiver.id, name: receiver.name, url: receiver.url },
+    state: data.state || null,
+  });
+});
+
+// Transport passthrough so the UI can show live state / stop playback.
+const CASTOR_COMMANDS = new Set(['play', 'pause', 'stop', 'toggle', 'seek', 'seek-relative', 'volume', 'next', 'previous', 'fullscreen']);
+
+app.post('/api/castor/command', async (req, res) => {
+  const body = req.body || {};
+  const receiver = resolveReceiver(body);
+  if (!receiver) return res.status(400).json({ error: 'Unknown receiver' });
+  const command = String(body.command || '');
+  if (!CASTOR_COMMANDS.has(command)) return res.status(400).json({ error: 'Unsupported command' });
+  try {
+    const rr = await fetch(receiver.url + '/api/' + command, {
+      method: 'POST',
+      headers: castorHeaders(receiver),
+      body: JSON.stringify(body.body || {}),
+      signal: AbortSignal.timeout(8000),
+    });
+    const data = await rr.json().catch(() => ({}));
+    return res.status(rr.status).json(data);
+  } catch (err) {
+    return res.status(502).json({ error: 'Receiver unreachable: ' + err.message });
+  }
+});
+
+app.get('/api/castor/state', async (req, res) => {
+  const receiver = resolveReceiver(req.query);
+  if (!receiver) return res.status(400).json({ error: 'Unknown receiver' });
+  try {
+    const rr = await fetch(receiver.url + '/api/state', {
+      headers: castorHeaders(receiver),
+      signal: AbortSignal.timeout(8000),
+    });
+    const data = await rr.json().catch(() => ({}));
+    return res.status(rr.status).json(data);
+  } catch (err) {
+    return res.status(502).json({ error: 'Receiver unreachable: ' + err.message });
+  }
 });
 
 // ═══ Tagging & ratings (SQLite) ═══════════════════════════════════════════════
