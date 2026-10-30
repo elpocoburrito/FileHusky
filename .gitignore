@@ -6,6 +6,9 @@ node_modules/
 tmp/
 data/
 
+# Pi agent runtime
+.pi/
+
 # Large test media (keep local only)
 test.mp4
 
