@@ -147,6 +147,40 @@ button {
 .icon-btn.small { width: 36px; height: 36px; border-radius: 10px; }
 
 .header-home { color: var(--accent); }
+.header-home:disabled,
+.header-home.current { color: var(--accent); opacity: 0.55; cursor: default; }
+
+/* ═══ Home page (favorite folders) ═══════════════════════════════════ */
+
+.home-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.home-head .section-title { margin: 0; }
+
+/* Inline add-folder form */
+.home-add {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  border-radius: 14px;
+  background: var(--surface);
+  border: 1px solid var(--outline);
+}
+
+.home-add-input { flex: 1; min-width: 0; }
+
+/* Favorites list reuses .file-list row styles; subtitle shows the full path */
+.home-list .file-sub {
+  font-family: ui-monospace, monospace;
+  font-size: 0.8rem;
+}
 
 /* Breadcrumbs */
 .breadcrumbs {

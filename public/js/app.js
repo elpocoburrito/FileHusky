@@ -14,10 +14,11 @@
   });
 
   // ── Tiny hash router ──────────────────────────────────────────────────────
+  // #/home              → { name:'home' }
   // #/browse?path=/media/movies   → { name:'browse', path:'/media/movies' }
   // #/video?path=...&name=...&folder=... → { name:'video', ... }
   function parseHash() {
-    const h = location.hash.replace(/^#/, '') || '/browse';
+    const h = location.hash.replace(/^#/, '') || '/home';
     const qIdx = h.indexOf('?');
     const route = qIdx === -1 ? h : h.slice(0, qIdx);
     const params = new URLSearchParams(qIdx === -1 ? '' : h.slice(qIdx + 1));
@@ -31,6 +32,7 @@
       };
     }
     if (route === '/tags') return { name: 'tags' };
+    if (route === '/home' || route === '/') return { name: 'home' };
     return { name: 'browse', path: params.get('path') || null };
   }
 
@@ -42,6 +44,7 @@
   };
 
   function toHash(to) {
+    if (to.name === 'home') return '#/home';
     if (to.name === 'tags') return '#/tags';
     if (to.name === 'video') {
       const p = new URLSearchParams();
@@ -108,6 +111,7 @@
   app.component('ui-icon', UiIcon);
   app.component('toggle-switch', ToggleSwitch);
   app.component('file-manager', FileManager);
+  app.component('home-page', HomePage);
   app.component('video-player', VideoPlayer);
   app.component('settings-panel', SettingsPanel);
   app.component('tag-manager', TagManager);

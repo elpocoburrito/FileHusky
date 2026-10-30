@@ -29,6 +29,11 @@
       @open-settings="settingsOpen = true"
     ></tag-manager>
 
+    <home-page
+      v-else-if="route.name === 'home'"
+      @open-settings="settingsOpen = true"
+    ></home-page>
+
     <settings-panel
       :open="settingsOpen"
       @close="settingsOpen = false"
@@ -45,6 +50,7 @@
   <script src="js/icons.js"></script>
   <script src="js/settings.js"></script>
   <script src="js/components/FileManager.js"></script>
+  <script src="js/components/Home.js"></script>
   <script src="js/components/TagPanel.js"></script>
   <script src="js/components/TagManager.js"></script>
   <script src="js/components/VideoPlayer.js"></script>

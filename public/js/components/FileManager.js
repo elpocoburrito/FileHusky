@@ -241,7 +241,7 @@ const FileManager = {
     <!-- ── Sticky header ─────────────────────────────────────────────── -->
     <header class="app-header">
       <div class="header-row">
-        <button class="icon-btn header-home" @click="navigate('/')" title="Root">
+        <button class="icon-btn header-home" @click="$router.push({ name: 'home' })" title="Home">
           <ui-icon name="home"></ui-icon>
         </button>
 

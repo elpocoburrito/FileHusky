@@ -791,6 +791,72 @@ app.get('/api/browse', (req, res) => {
   }
 });
 
+// ─── Home menu favorites (stored in data/home.json) ─────────────────────
+const HOME_FILE = path.join(__dirname, 'data', 'home.json');
+const HOME_DEFAULT_FOLDERS = ['/mnt', '/media'];
+
+function loadHomeFolders() {
+  try {
+    const data = JSON.parse(fs.readFileSync(HOME_FILE, 'utf8'));
+    if (data && Array.isArray(data.folders)) {
+      return data.folders.filter((f) => typeof f === 'string' && f.trim());
+    }
+  } catch { /* first run or unreadable file */ }
+  return null;
+}
+
+function saveHomeFolders(folders) {
+  fs.mkdirSync(path.dirname(HOME_FILE), { recursive: true });
+  fs.writeFileSync(HOME_FILE, JSON.stringify({ folders }, null, 2));
+}
+
+app.get('/api/home/folders', (_req, res) => {
+  let folders = loadHomeFolders();
+  if (!folders) {
+    folders = HOME_DEFAULT_FOLDERS.slice();
+    try { saveHomeFolders(folders); } catch (e) { console.warn('home.json: ' + e.message); }
+  }
+  res.json({ folders });
+});
+
+/** Add a favorite folder. The path must exist and be a directory. */
+app.post('/api/home/folders', (req, res) => {
+  const raw = String((req.body && req.body.path) || '').trim();
+  if (!raw) return res.status(400).json({ error: 'Path required' });
+  // safePath resolves + guards traversal, and requires the path to exist
+  const sp = safePath(raw);
+  if (!sp) return res.status(400).json({ error: 'Folder not found: ' + raw });
+  try {
+    if (!fs.statSync(sp).isDirectory()) {
+      return res.status(400).json({ error: 'Not a folder: ' + raw });
+    }
+  } catch {
+    return res.status(400).json({ error: 'Folder not found: ' + raw });
+  }
+  const clientPath = fromHostPath(sp);
+  const folders = loadHomeFolders() || HOME_DEFAULT_FOLDERS.slice();
+  if (!folders.includes(clientPath)) folders.push(clientPath);
+  try {
+    saveHomeFolders(folders);
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+  res.json({ folders });
+});
+
+/** Remove a favorite folder (unknown paths are ignored — idempotent). */
+app.delete('/api/home/folders', (req, res) => {
+  const raw = String(req.query.path || '').trim();
+  const folders = (loadHomeFolders() || HOME_DEFAULT_FOLDERS.slice())
+    .filter((f) => f !== raw);
+  try {
+    saveHomeFolders(folders);
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+  res.json({ folders });
+});
+
 // ─── Folder zip download & delete ───────────────────────────────────────
 const archiver = require('archiver');
 
