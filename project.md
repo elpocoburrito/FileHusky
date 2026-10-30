@@ -239,3 +239,31 @@ from the local `autoNext` setting.
 - Server untouched: the existing `/api/castor/{cast,command,state}` endpoints
   already cover everything (commands include volume/fullscreen/seek-relative).
 - **README** documents remote mode + the client store.
+
+----
+
+## 2026-10-30 — Mobile player input & auto-landscape fullscreen
+
+Three mobile-only issues in the video player, all rooted in the tap target
+being the `<video>` element rather than the whole playback surface:
+
+- **Tap anywhere to toggle the UI.** The `@click` handler moved from the
+  `<video>` to `.video-area` (the video now only keeps `@dblclick`), so a tap
+  anywhere on the player surface opens/closes the overlay. `onVideoClick`
+  ignores clicks whose target is inside `.vcontrols`, `.vc-top`, `.vc-center`,
+  `.remote-panel`, `.tag-fs`, `.vc-quality`, `.quality-backdrop` or
+  `.video-overlay` (menus/tag panels don't use `@click.stop`, so they're
+  filtered by target instead of relying on propagation alone). Touch detection
+  falls back to `isTouchDevice()` when `_downPointerType` is empty, and
+  `onPointerDown` no longer defaults an empty `pointerType` to `'mouse'`.
+- **Hidden UI is inert.** The `.video-area` gets a `vc-ui-hidden` class while
+  `!controlsVisible`; `.vc-ui-hidden .vc-top` / `.vc-ui-hidden .vc-center`
+  are `pointer-events: none` so no control captures a tap during the fade-out
+  (the bottom bar already had `pointer-events: none` via `vcontrols-hidden`).
+- **Auto-landscape fullscreen.** `onFullscreenChange()` now, on entering
+  fullscreen on a touch device with a landscape video (`mediaIsLandscape()`,
+  from `videoWidth/videoHeight` or the ffprobe metadata), calls
+  `lockOrientation('landscape')`; `unlockOrientation()` releases the lock when
+  fullscreen exits. The orientation button's `toggleOrientation` reuses the
+  same `lockOrientation` helper (and keeps the iOS fullscreen-cycle fallback).
+- No `server.js` changes; verified with `node --check` + pi-lens diagnostics.

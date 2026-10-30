@@ -824,11 +824,21 @@ const VideoPlayer = {
       };
     },
 
-    onVideoClick() {
+    onVideoClick(e) {
       this.qualityOpen = false;
+      if (this.phase !== 'ready') return;
+      // A click that starts on a control or an overlay must not toggle the UI
+      // (the bars use @click.stop, but menus/tag panels don't).
+      const target = e && e.target;
+      if (target && target.closest && target.closest('.vcontrols, .vc-top, .vc-center, .remote-panel, .tag-fs, .vc-quality, .quality-backdrop, .video-overlay')) {
+        return;
+      }
       // The click event itself carries no pointerType (plain MouseEvent), so
       // we use the pointer type captured at pointerdown (always fires first).
-      const isTouch = this._downPointerType && this._downPointerType !== 'mouse';
+      // Fall back to device detection if pointerdown never arrived.
+      const isTouch = this._downPointerType
+        ? this._downPointerType !== 'mouse'
+        : this.isTouchDevice();
       // Touch: tap toggles the player UI (bars + center play/pause).
       // Mouse: click toggles play/pause (desktop convention), unless a
       // double-click is in progress — that toggles fullscreen instead.
@@ -852,7 +862,10 @@ const VideoPlayer = {
 
     /** Mouse double-click on the video: enter/exit fullscreen */
     onVideoDblClick() {
-      if (this.lastPointerType !== 'mouse') return;
+      const isTouch = this._downPointerType
+        ? this._downPointerType !== 'mouse'
+        : this.isTouchDevice();
+      if (isTouch) return;
       if (this._clickTimer) { clearTimeout(this._clickTimer); this._clickTimer = null; }
       this.toggleFullscreen();
     },
@@ -866,7 +879,7 @@ const VideoPlayer = {
 
     /** Record the pointer type at press time (used by onVideoClick) */
     onPointerDown(e) {
-      this._downPointerType = e.pointerType || 'mouse';
+      this._downPointerType = e.pointerType || (this.isTouchDevice() ? 'touch' : 'mouse');
       if (this._downPointerType === 'mouse') this.onPointerMove(e);
     },
 
@@ -906,13 +919,7 @@ const VideoPlayer = {
      */
     async toggleOrientation() {
       const want = this.landscape ? 'portrait' : 'landscape';
-      try {
-        if (screen.orientation && screen.orientation.lock) {
-          await screen.orientation.lock(want);
-          this.landscape = want === 'landscape';
-          return;
-        }
-      } catch { /* lock refused — fall through to fullscreen fallback */ }
+      if (await this.lockOrientation(want)) return;
       // Fallback (iOS): cycle fullscreen so the OS auto-rotate can take over.
       try {
         if (document.fullscreenElement) {
@@ -1029,7 +1036,52 @@ const VideoPlayer = {
     // ═══ Tagging overlay ══════════════════════════════════════════════════
 
     onFullscreenChange() {
-      this.isFullscreen = document.fullscreenElement === this.$refs.videoArea;
+      const area = this.$refs.videoArea;
+      const isFs = !!area && document.fullscreenElement === area;
+      this.isFullscreen = isFs;
+      this.onOrientationChange();
+      if (isFs) {
+        // Entering fullscreen on a touch device: a landscape video should fill
+        // a landscape screen, so rotate automatically when we can.
+        if (this.isTouchDevice() && this.mediaIsLandscape()) {
+          this.lockOrientation('landscape');
+        }
+      } else {
+        this.unlockOrientation();
+      }
+    },
+
+    /** True when the video being played is at least as wide as it is tall */
+    mediaIsLandscape() {
+      const player = this.$refs.video;
+      if (player && player.videoWidth && player.videoHeight) {
+        return player.videoWidth >= player.videoHeight;
+      }
+      return !!(this.meta && this.meta.width && this.meta.height &&
+        this.meta.width >= this.meta.height);
+    },
+
+    /** Best-effort screen-orientation lock (unsupported on iOS Safari). */
+    async lockOrientation(want) {
+      try {
+        if (screen.orientation && screen.orientation.lock) {
+          await screen.orientation.lock(want);
+          this.landscape = want === 'landscape';
+          this._orientationLocked = true;
+          return true;
+        }
+      } catch { /* lock refused or unsupported */ }
+      return false;
+    },
+
+    /** Release a lock taken by the player and fall back to the OS setting. */
+    unlockOrientation() {
+      if (!this._orientationLocked) return;
+      this._orientationLocked = false;
+      try {
+        if (screen.orientation && screen.orientation.unlock) screen.orientation.unlock();
+      } catch { /* ignore */ }
+      this.onOrientationChange();
     },
 
     async toggleTags() {
@@ -1148,9 +1200,10 @@ const VideoPlayer = {
     <div class="video-area" ref="videoArea"
          @pointerdown="onPointerDown" @mousemove="onPointerMove"
          @mouseleave="onMouseLeave" @wheel.prevent="onWheel"
-         :class="{ 'vc-hide-cursor': !controlsVisible }">
+         @click="onVideoClick"
+         :class="{ 'vc-hide-cursor': !controlsVisible, 'vc-ui-hidden': !controlsVisible }">
       <video ref="video" class="video-el" playsinline preload="auto" v-show="!remote"
-             @click="onVideoClick" @dblclick="onVideoDblClick"></video>
+             @dblclick="onVideoDblClick"></video>
 
       <!-- ── Remote-control panel (casting mode) ──────────────────────── -->
       <div v-if="remote" class="remote-panel">

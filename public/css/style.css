@@ -826,6 +826,13 @@ button {
   pointer-events: none;
 }
 
+/* While the player UI is hidden nothing in it may capture taps — including
+   during the fade-out, when the top bar is still rendered by its transition. */
+.vc-ui-hidden .vc-top,
+.vc-ui-hidden .vc-center {
+  pointer-events: none;
+}
+
 .vc-seek-row {
   display: flex;
   align-items: center;
