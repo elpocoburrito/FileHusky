@@ -268,7 +268,8 @@ const VideoPlayer = {
 
   methods: {
     async start() {
-      this.cleanup();
+      // Keep the current frame attached while the next source is prepared.
+      this.cleanup(true);
       // Swapping the media source can make the browser drop the orientation
       // lock, so re-assert it immediately instead of waiting for the new
       // video's metadata (which leaves a visible portrait hop).
@@ -668,7 +669,16 @@ const VideoPlayer = {
       else this.$router.replace({ name: 'browse', path: this.folder || Utils.defaultPath() });
     },
 
-    cleanup() {
+    /**
+     * Tear down the current playback.
+     *
+     * `keepMedia` leaves the <video> attached to its last source instead of
+     * blanking it. Blanking it in fullscreen makes Firefox for Android
+     * re-evaluate its fullscreen/orientation state while the element holds no
+     * media, which rotates the screen to portrait until the next source loads.
+     * It also removes a black flash between videos.
+     */
+    cleanup(keepMedia) {
       this.stopStatusPolling();
       if (this.hls) { this.hls.destroy(); this.hls = null; }
       const player = this.$refs.video;
@@ -689,8 +699,10 @@ const VideoPlayer = {
           this._webkitFsBound = false;
         }
         player.pause();
-        player.removeAttribute('src');
-        player.load();
+        if (!keepMedia) {
+          player.removeAttribute('src');
+          player.load();
+        }
       }
     },
 

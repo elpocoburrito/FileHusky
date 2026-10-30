@@ -394,3 +394,41 @@ a media swap.
 - A manual choice from the orientation button sets `_manualOrientation`, which
   suppresses auto-orientation for that video; the `path` watcher clears it when
   moving to the next video, so a new video is auto-oriented again.
+
+----
+
+## Fix: Firefox Android portrait flash on the first "next video"
+
+Platform: **Firefox for Android**, app's own
+fullscreen overlay (a div, not the native player), and the *whole UI* rotates
+to portrait and back. That rules out several earlier guesses:
+
+- `ScreenOrientation.lock()` did not exist in Firefox until **144**
+  (2025-10-14) and is still only partially supported, so on older Fenix the
+  whole orientation-lock path is inert (`lockOrientation()` returns false and
+  `_wantOrientation` stays null, so `holdLandscape()` never runs). The earlier
+  hold/retry work cannot help there, which is why it changed nothing.
+- Firefox for Android does its own fullscreen/orientation juggling around the
+  `<video>` element.
+
+Real culprit found in our code: `cleanup()` blanked the media on every
+`start()`
+
+    player.removeAttribute('src');
+    player.load();
+
+so between videos the fullscreen element held a **sourceless `<video>`** while
+the metadata request and transcode session were pending. That is exactly when
+Firefox re-evaluated and flipped to portrait, flipping back once the next
+source attached.
+
+- `cleanup(keepMedia)` skips the blanking when the caller is about to attach a
+  new source. `start()` now calls `cleanup(true)`, so the last frame stays
+  attached across the swap (also removes the black flash between videos).
+- Full teardown is unchanged for the cases that really unload: `beforeUnmount`,
+  `startRemote()` (casting hides the video) and the fatal-error path.
+
+Caveat recorded for later: on Firefox < 144 the automatic landscape rotation
+cannot be driven by `screen.orientation.lock()` at all — whatever landscape is
+seen there is Firefox's own fullscreen behaviour, so the rule is "do not
+disturb it" rather than "force it".
