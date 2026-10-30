@@ -435,6 +435,11 @@ const VideoPlayer = {
       }
 
       const onLoaded = () => {
+        // Dimensions are known now: when the player is already fullscreen
+        // (e.g. moving to the next video), re-apply the orientation so a new
+        // portrait video is not left locked in landscape from the previous one.
+        this.clearOrientationRetry();
+        if (this.isFullscreen) this.applyAutoOrientation();
         if (this.resumeSeconds > 0) {
           player.currentTime = this.resumeSeconds;
           this.statusText = 'Resumed at ' + Utils.formatDuration(this.resumeSeconds);
@@ -669,7 +674,7 @@ const VideoPlayer = {
         player.removeEventListener('progress', this.onBufferUi);
         player.removeEventListener('playing', this.onPlayingUi);
         clearTimeout(this._recoverResetTimer);
-        clearTimeout(this._orientRetry);
+        this.clearOrientationRetry();
         if (this._onWebkitBeginFs) {
           player.removeEventListener('webkitbeginfullscreen', this._onWebkitBeginFs);
           player.removeEventListener('webkitendfullscreen', this._onWebkitEndFs);
@@ -864,7 +869,11 @@ const VideoPlayer = {
       if (Date.now() - down.t > 700) return;
 
       if (down.type !== 'mouse') {
-        // Touch: a tap anywhere opens/closes the player UI
+        // Touch: a tap anywhere opens/closes the player UI. The browser then
+        // dispatches a synthesized click at these coordinates — by now the UI
+        // may be visible, so that click would land on a freshly shown button.
+        // Swallow it (see onCaptureClick).
+        this._suppressClickUntil = Date.now() + 500;
         this.togglePlayerUi();
         return;
       }
@@ -880,6 +889,21 @@ const VideoPlayer = {
         this._clickTimer = null;
         this.togglePlay();
       }, 260);
+    },
+
+    /**
+     * Swallow the click synthesized right after a UI-toggling tap, so it does
+     * not activate a control that the same tap just revealed.
+     */
+    onCaptureClick(e) {
+      if (!this._suppressClickUntil) return;
+      if (Date.now() > this._suppressClickUntil) {
+        this._suppressClickUntil = 0;
+        return;
+      }
+      this._suppressClickUntil = 0;
+      e.preventDefault();
+      e.stopPropagation();
     },
 
     /** True when the element belongs to a player control or overlay. */
@@ -916,6 +940,9 @@ const VideoPlayer = {
 
     /** Record the pointer type and origin at press time (used by onPointerUp) */
     onPointerDown(e) {
+      // A new press starts a fresh interaction: never let a stale suppression
+      // window swallow a legitimate control click.
+      this._suppressClickUntil = 0;
       const type = e.pointerType || (this.isTouchDevice() ? 'touch' : 'mouse');
       this._downPointerType = type;
       this._down = {
@@ -1089,24 +1116,36 @@ const VideoPlayer = {
     syncFullscreenState(isFs) {
       this.isFullscreen = isFs;
       this.onOrientationChange();
-      if (isFs) this.tryAutoLandscape();
+      if (isFs) this.applyAutoOrientation();
       else this.unlockOrientation();
     },
 
     /**
-     * Entering fullscreen on a touch device should rotate to landscape when
-     * the video is wider than tall — a landscape video on a portrait screen
-     * wastes most of the display.
+     * Match the screen orientation to the current video while fullscreen.
+     *
+     * A landscape video on a portrait screen wastes most of the display, so it
+     * locks landscape. A portrait video releases our lock again — otherwise a
+     * landscape lock taken for the previous video would keep it sideways.
+     * Only touch devices are rotated; desktop fullscreen is left alone.
      */
-    tryAutoLandscape() {
-      if (!this.isTouchDevice() || !this.mediaIsLandscape()) return;
+    applyAutoOrientation() {
+      this.clearOrientationRetry();
+      if (!this.isTouchDevice()) return;
+      if (!this.mediaIsLandscape()) {
+        this.unlockOrientation();
+        return;
+      }
       this.lockOrientation('landscape');
       // Fullscreen may still be settling, and some browsers only honour the
       // lock once it is fully applied — retry once shortly after.
-      clearTimeout(this._orientRetry);
       this._orientRetry = setTimeout(() => {
         if (this.isFullscreen && !this.landscape) this.lockOrientation('landscape');
       }, 400);
+    },
+
+    clearOrientationRetry() {
+      clearTimeout(this._orientRetry);
+      this._orientRetry = null;
     },
 
     /** True when the video being played is at least as wide as it is tall */
@@ -1259,6 +1298,7 @@ const VideoPlayer = {
          @pointerdown="onPointerDown" @pointerup="onPointerUp"
          @pointercancel="onPointerCancel" @mouseleave="onMouseLeave"
          @mousemove="onPointerMove" @wheel.prevent="onWheel"
+         @click.capture="onCaptureClick"
          :class="{ 'vc-hide-cursor': !controlsVisible, 'vc-ui-hidden': !controlsVisible }">
       <video ref="video" class="video-el" playsinline preload="auto" v-show="!remote"></video>
 

@@ -311,3 +311,31 @@ locks `landscape` when the device is touch and `mediaIsLandscape()` (from
 `webkitbeginfullscreen` / `webkitendfullscreen` events on the `<video>` both
 route into it, so iOS native video fullscreen is covered too (iOS has no
 orientation-lock API, so there it remains best-effort).
+
+----
+
+## Fix: tap-through to revealed buttons; orientation on next video
+
+Two follow-ups after taps started working again:
+
+- **Invisible buttons were still activated.** Not a CSS problem — the hidden
+  bars really are inert (`vcontrols-hidden` / `vc-ui-hidden`). It was an
+  ordering race: the tap's `pointerup` *reveals* the UI, and the browser then
+  dispatches the synthesized `click` at the same coordinates, which now lands
+  on a button that did not exist a moment earlier (previously masked by the
+  removed `touchend` blocker). `onPointerUp` therefore arms
+  `_suppressClickUntil = now + 500 ms` before toggling, and a
+  `@click.capture="onCaptureClick"` on `.video-area` swallows that one click
+  (`preventDefault` + `stopPropagation`, which also stops the button's own
+  handler). `onPointerDown` clears the flag so a stale window can never eat a
+  later legitimate control click.
+- **Fullscreen landscape was wrong for the next video.** `#/video` reuses the
+  same `<video-player>` instance (the route element is not `:key`ed), so
+  `isFullscreen` and the landscape lock survived a video change — a portrait
+  video inheriting the previous video's landscape lock. Orientation is now
+  re-applied whenever media dimensions become known (in the `loadedmetadata`
+  handler when `isFullscreen`): `applyAutoOrientation()` locks landscape for
+  landscape videos and calls `unlockOrientation()` for portrait ones, so a
+  stale lock is released. `tryAutoLandscape()` was replaced by
+  `applyAutoOrientation()` + `clearOrientationRetry()` (the retry timer is
+  also cleared in `cleanup()`).
