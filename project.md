@@ -360,3 +360,37 @@ mouse and called `showControls()` — re-revealing the UI the same tap had hidde
   (isTouchDevice() ? 'touch' : 'mouse')`, so an absent `pointerType` is never
   read as a mouse. Used by `onPointerMove`, `onMouseLeave` and `onPointerDown`.
 - `lastPointerType` became dead state (write-only) and was removed.
+
+----
+
+## Fix: portrait flash on the first "next video" in fullscreen
+
+Symptom: in fullscreen landscape mode, the *first* "play next" briefly flipped
+to portrait and then back to landscape; later transitions were fine.
+
+Cause: swapping the media source makes the browser drop the orientation lock,
+and the only thing that re-took it was the single retry scheduled **400 ms**
+after `applyAutoOrientation()` — hence a visible portrait hop while fullscreen
+was being re-established. The one-off nature came from that retry window: a
+lock taken during the very first transition left the session locked, so later
+swaps did not show it. `applyAutoOrientation()` could also *release* the lock
+whenever dimensions were momentarily unknown, which is exactly the state during
+a media swap.
+
+- `mediaDimensions()` returns the video's real pixel size (or `null` when not
+  reliably known). `applyAutoOrientation()` keeps the current lock when the
+  dimensions are unknown and re-checks after 250 ms instead of unlocking —
+  a video change must never flash the screen to portrait.
+- `holdLandscape()` re-asserts the lock every ~120 ms for 1.5 s after it is
+  applied, so a lock dropped by the swap is retaken almost immediately instead
+  of once after 400 ms. It stops as soon as fullscreen ends or the wanted
+  orientation changes.
+- `start()` re-asserts (and re-holds) the lock immediately after `cleanup()` when
+  fullscreen, touch, and landscape was already wanted, rather than waiting for
+  the new video's `loadedmetadata`.
+- `_wantOrientation` tracks the intended lock inside `lockOrientation()` /
+  `unlockOrientation()` (which also cancels the hold), so the hold never fights
+  the video's own orientation.
+- A manual choice from the orientation button sets `_manualOrientation`, which
+  suppresses auto-orientation for that video; the `path` watcher clears it when
+  moving to the next video, so a new video is auto-oriented again.

@@ -227,6 +227,8 @@ const VideoPlayer = {
   watch: {
     // Swapping to another video ("up next") reuses this component — reload
     path() {
+      // A manual orientation choice applies to the video it was made on
+      this._manualOrientation = false;
       this.start();
       this.loadUpNext();
       this.loadVideoTags();
@@ -267,6 +269,13 @@ const VideoPlayer = {
   methods: {
     async start() {
       this.cleanup();
+      // Swapping the media source can make the browser drop the orientation
+      // lock, so re-assert it immediately instead of waiting for the new
+      // video's metadata (which leaves a visible portrait hop).
+      if (this._wantOrientation === 'landscape' && this.isFullscreen && this.isTouchDevice()) {
+        this.lockOrientation('landscape');
+        this.holdLandscape();
+      }
       this.remote = false;
       this.phase = 'loading';
       this.errorMsg = null;
@@ -998,6 +1007,8 @@ const VideoPlayer = {
      */
     async toggleOrientation() {
       const want = this.landscape ? 'portrait' : 'landscape';
+      // Remember the explicit choice so auto-orientation does not undo it
+      this._manualOrientation = true;
       if (await this.lockOrientation(want)) return;
       // Fallback (iOS): cycle fullscreen so the OS auto-rotate can take over.
       try {
@@ -1137,17 +1148,42 @@ const VideoPlayer = {
      */
     applyAutoOrientation() {
       this.clearOrientationRetry();
-      if (!this.isTouchDevice()) return;
-      if (!this.mediaIsLandscape()) {
+      if (!this.isTouchDevice() || !this.isFullscreen) return;
+      // An explicit choice from the orientation button wins until the next video
+      if (this._manualOrientation) return;
+      const dims = this.mediaDimensions();
+      if (!dims) {
+        // Dimensions unknown (media still swapping): keep the current lock
+        // instead of flashing to portrait, and look again shortly.
+        this._orientRetry = setTimeout(() => this.applyAutoOrientation(), 250);
+        return;
+      }
+      if (dims.width < dims.height) {
         this.unlockOrientation();
         return;
       }
       this.lockOrientation('landscape');
-      // Fullscreen may still be settling, and some browsers only honour the
-      // lock once it is fully applied — retry once shortly after.
-      this._orientRetry = setTimeout(() => {
-        if (this.isFullscreen && !this.landscape) this.lockOrientation('landscape');
-      }, 400);
+      this.holdLandscape();
+    },
+
+    /**
+     * Keep landscape locked for a short window after it is applied.
+     *
+     * Swapping the media source (next video, quality change, restart) can make
+     * a browser drop the orientation lock, which flashes the screen back to
+     * portrait until something re-locks it. Re-asserting every ~120 ms for a
+     * moment keeps that transition imperceptible, whereas a single retry after
+     * several hundred milliseconds leaves a visible portrait hop.
+     */
+    holdLandscape() {
+      const until = Date.now() + 1500;
+      const tick = () => {
+        this._orientRetry = null;
+        if (!this.isFullscreen || this._wantOrientation !== 'landscape') return;
+        if (!this.landscape) this.lockOrientation('landscape');
+        if (Date.now() < until) this._orientRetry = setTimeout(tick, 120);
+      };
+      this._orientRetry = setTimeout(tick, 120);
     },
 
     clearOrientationRetry() {
@@ -1155,14 +1191,23 @@ const VideoPlayer = {
       this._orientRetry = null;
     },
 
+    /** Reliable pixel dimensions of the current media, or null when unknown. */
+    mediaDimensions() {
+      const player = this.$refs.video;
+      if (player && player.videoWidth > 0 && player.videoHeight > 0) {
+        return { width: player.videoWidth, height: player.videoHeight };
+      }
+      const m = this.meta;
+      if (m && m.width > 0 && m.height > 0) {
+        return { width: m.width, height: m.height };
+      }
+      return null;
+    },
+
     /** True when the video being played is at least as wide as it is tall */
     mediaIsLandscape() {
-      const player = this.$refs.video;
-      if (player && player.videoWidth && player.videoHeight) {
-        return player.videoWidth >= player.videoHeight;
-      }
-      return !!(this.meta && this.meta.width && this.meta.height &&
-        this.meta.width >= this.meta.height);
+      const dims = this.mediaDimensions();
+      return !!dims && dims.width >= dims.height;
     },
 
     /** Best-effort screen-orientation lock (unsupported on iOS Safari). */
@@ -1172,6 +1217,7 @@ const VideoPlayer = {
           await screen.orientation.lock(want);
           this.landscape = want === 'landscape';
           this._orientationLocked = true;
+          this._wantOrientation = want;
           return true;
         }
       } catch { /* lock refused or unsupported */ }
@@ -1180,6 +1226,8 @@ const VideoPlayer = {
 
     /** Release a lock taken by the player and fall back to the OS setting. */
     unlockOrientation() {
+      this._wantOrientation = null;
+      this.clearOrientationRetry();
       if (!this._orientationLocked) return;
       this._orientationLocked = false;
       try {
