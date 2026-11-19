@@ -100,8 +100,11 @@ const SettingsPanel = {
                 <button :class="{on: s.viewMode === 'list'}" @click="s.viewMode = 'list'">
                   <ui-icon name="list" :size="18"></ui-icon> List
                 </button>
-                <button :class="{on: s.viewMode === 'grid'}" @click="s.viewMode = 'grid'">
-                  <ui-icon name="grid" :size="18"></ui-icon> Grid
+                <button :class="{on: s.viewMode === 'gallery'}" @click="s.viewMode = 'gallery'">
+                  <ui-icon name="grid" :size="18"></ui-icon> Gallery
+                </button>
+                <button :class="{on: s.viewMode === 'gallery-lg'}" @click="s.viewMode = 'gallery-lg'">
+                  <ui-icon name="gridLarge" :size="18"></ui-icon> Large
                 </button>
               </div>
             </div>

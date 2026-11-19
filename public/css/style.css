@@ -26,6 +26,8 @@
   --image-soft: rgba(125, 223, 154, 0.14);
   --file: #aab3bf;
   --file-soft: rgba(170, 179, 191, 0.12);
+  --audio: #b39ddb;
+  --audio-soft: rgba(179, 157, 219, 0.16);
   --shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
   --scrim: rgba(0, 0, 0, 0.6);
 }
@@ -52,6 +54,8 @@
   --image-soft: rgba(125, 223, 154, 0.25);
   --file: #5f6773;
   --file-soft: rgba(95, 103, 115, 0.12);
+  --audio: #6a4fb3;
+  --audio-soft: rgba(106, 79, 179, 0.16);
   --shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
   --scrim: rgba(0, 0, 0, 0.45);
 }
@@ -382,6 +386,7 @@ button {
 .file-icon.is-folder { color: var(--folder); background: var(--folder-soft); }
 .file-icon.is-video  { color: var(--video);  background: var(--video-soft); }
 .file-icon.is-image  { color: var(--image);  background: var(--image-soft); }
+.file-icon.is-audio  { color: var(--audio);  background: var(--audio-soft); }
 .file-icon.is-file   { color: var(--file);   background: var(--file-soft); }
 
 .file-text {
@@ -414,63 +419,92 @@ button {
 }
 .file-play { color: var(--accent); }
 
-/* ─── Grid view ───────────────────────────────────────────────────────────── */
-.file-grid {
+/* ─── Gallery views (thumbnails) ────────────────────────────────────────────
+   Two sizes share one card shape: a 16:9 preview on top, name + subtitle
+   below. `gallery` = small, `gallery-lg` = large (TV mode default).       */
+.gallery-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  gap: 14px;
   padding: 12px 16px 0;
   max-width: 1100px;
   margin: 0 auto;
 }
 
-.grid-card {
-  position: relative;
+.gallery-grid.gallery-lg {
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 18px;
+}
+
+.gallery-cell { position: relative; }
+
+.gallery-card {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  padding: 16px 10px 12px;
-  border-radius: 16px;
+  width: 100%;
+  padding: 0;
+  border-radius: 14px;
   background: var(--surface);
   border: 1px solid var(--outline);
-  text-align: center;
-  transition: transform 0.1s, background 0.15s;
+  overflow: hidden;
+  text-align: left;
+  transition: transform 0.1s, background 0.15s, border-color 0.15s;
 }
-.grid-card:hover { background: var(--surface-2); }
-.grid-card:active { transform: scale(0.97); }
+.gallery-card:hover { background: var(--surface-2); border-color: var(--surface-3); }
+.gallery-card:active { transform: scale(0.98); }
 
-.grid-icon {
-  display: inline-flex;
+.gallery-thumb {
+  position: relative;
+  display: flex;
   align-items: center;
   justify-content: center;
-  width: 72px;
-  height: 72px;
-  border-radius: 18px;
-}
-.grid-icon.is-folder { color: var(--folder); background: var(--folder-soft); }
-.grid-icon.is-video  { color: var(--video);  background: var(--video-soft); }
-.grid-icon.is-image  { color: var(--image);  background: var(--image-soft); }
-.grid-icon.is-file   { color: var(--file);   background: var(--file-soft); }
-
-.grid-name {
   width: 100%;
-  font-size: 0.9rem;
+  aspect-ratio: 16 / 9;
+  background: var(--surface-3);
+  color: var(--text-dim);
+  overflow: hidden;
+}
+.gallery-thumb.is-folder { color: var(--folder); background: var(--folder-soft); }
+.gallery-thumb.is-video  { color: var(--video);  background: var(--video-soft); }
+.gallery-thumb.is-image  { color: var(--image);  background: var(--image-soft); }
+.gallery-thumb.is-audio  { color: var(--audio);  background: var(--audio-soft); }
+.gallery-thumb.is-file   { color: var(--file);   background: var(--file-soft); }
+
+.thumb-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.gallery-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 9px 11px 11px;
+  min-width: 0;
+}
+
+.gallery-name {
+  font-size: 0.92rem;
   font-weight: 600;
   line-height: 1.3;
   overflow-wrap: anywhere;
   display: -webkit-box;
   -webkit-line-clamp: 2;
+  line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
 
-.grid-sub {
-  font-size: 0.78rem;
-  color: var(--text-dim);
-}
+.gallery-sub { font-size: 0.78rem; color: var(--text-dim); }
 
-.grid-play {
+/* Large gallery: readable from the couch */
+.gallery-lg .gallery-name { font-size: 1.05rem; }
+.gallery-lg .gallery-sub { font-size: 0.86rem; }
+.gallery-lg .gallery-text { padding: 11px 14px 14px; }
+
+.gallery-play {
   position: absolute;
   top: 10px;
   right: 10px;
@@ -480,8 +514,9 @@ button {
   width: 30px;
   height: 30px;
   border-radius: 999px;
-  background: var(--accent-soft);
-  color: var(--accent);
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  backdrop-filter: blur(4px);
 }
 
 /* ─── States (loading / error / empty) ────────────────────────────────────── */
@@ -1455,7 +1490,7 @@ button {
 
 /* Very small screens: tighten grid */
 @media (max-width: 360px) {
-  .file-grid { grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); }
+  .gallery-grid { grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); }
 }
 
 /* ═══ Tagging overlay (video player) ════════════════════════════════════════ */
@@ -1829,9 +1864,7 @@ button {
 
 .row-menu-btn:hover { background: var(--surface-3); color: var(--text); }
 
-/* Grid view: ⋮ button pinned to the card's top-right corner */
-.grid-cell { position: relative; }
-.grid-cell .grid-card { width: 100%; }
+/* Gallery: ⋮ button pinned to the card's top-right corner */
 .row-menu-btn.grid {
   top: 8px;
   right: 6px;
@@ -1856,8 +1889,8 @@ button {
   flex-direction: column;
 }
 
-/* Grid variant: menu drops from the corner button */
-.grid-cell .row-menu { top: 46px; right: 4px; }
+/* Gallery: menu drops from the corner button */
+.gallery-cell .row-menu { top: 46px; right: 4px; }
 
 .row-menu-item {
   display: flex;
@@ -1893,7 +1926,7 @@ button {
 }
 
 .tv-mode .file-row.tv-focus,
-.tv-mode .grid-card.tv-focus { background: var(--surface-2); }
+.tv-mode .gallery-card.tv-focus { background: var(--surface-2); }
 
 .tv-mode .icon-btn.tv-focus,
 .tv-mode .crumb.tv-focus,
@@ -1933,4 +1966,41 @@ button {
 @keyframes tv-hint-in {
   from { opacity: 0; transform: translate(-50%, 8px); }
   to   { opacity: 1; transform: translate(-50%, 0); }
+}
+
+/* ─── TV mode: extra bits for the gallery + selects ───────────────────────── */
+
+/* "Media only" badge: the TV filter is implicit, so it is a label, not a
+   toggle (the .chip-toggle markup would invite a press that does nothing). */
+.tv-only-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 40px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+/* A <select> takes the arrow keys only after it is opened (tv.js arms it) */
+.tv-mode select.tv-armed {
+  outline: 3px dashed var(--accent);
+  outline-offset: 3px;
+}
+
+/* Gallery cards get the accent border as well as the ring */
+.tv-mode .gallery-card.tv-focus {
+  border-color: var(--accent);
+  background: var(--surface-2);
+}
+
+/* The volume slider normally expands on hover / :focus-visible; in TV mode it
+   stays open so it is a real 44px-high focus stop and the level is readable. */
+.tv-mode .vc-vol-slider {
+  width: 76px;
+  opacity: 1;
+  margin-right: 6px;
 }

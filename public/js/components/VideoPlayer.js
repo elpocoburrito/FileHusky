@@ -86,6 +86,9 @@ const VideoPlayer = {
   computed: {
     s() { return SettingsStore.settings; },
 
+    /** TV mode adds a transport button to the bottom bar (no click surface). */
+    tvMode() { return TvMode.state.enabled; },
+
     // ── Casting session ────────────────────────────────────────────────
     cast() { return CastStore.state; },
 
@@ -956,6 +959,9 @@ const VideoPlayer = {
     hideControls() {
       this.clearHideTimer();
       this.qualityOpen = false;
+      // In TV mode the overlay is the only thing a remote can navigate: hiding
+      // it would leave the arrow keys with no visible target.
+      if (TvMode.state.enabled) return;
       this.controlsVisible = false;
     },
 
@@ -1497,6 +1503,12 @@ const VideoPlayer = {
           <div class="vc-group">
             <button class="vc-btn" :disabled="!prevVideo" @click="goPrev" title="Previous video">
               <ui-icon name="skipPrev" :size="26"></ui-icon>
+            </button>
+            <!-- TV mode has no click-to-toggle surface, so the transport needs
+                 its own play/pause between prev and next -->
+            <button v-if="tvMode" class="vc-btn" @click="togglePlay"
+                    :title="isPlaying ? 'Pause' : 'Play'" :aria-label="isPlaying ? 'Pause' : 'Play'">
+              <ui-icon :name="isPlaying ? 'pause' : 'play'" :size="28"></ui-icon>
             </button>
             <button class="vc-btn" :disabled="!nextVideo" @click="goNext" title="Next video">
               <ui-icon name="skipNext" :size="26"></ui-icon>

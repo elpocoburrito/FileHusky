@@ -1,6 +1,6 @@
 /* ─── FileManager: browse view (drives, breadcrumbs, file list) ─────────── */
 
-/* global Vue, Utils, SettingsStore */
+/* global Vue, Utils, SettingsStore, TvMode */
 
 // Shared scroll memory, keyed by folder path and kept across instances
 // (the browse view is re-created on every navigation).
@@ -28,6 +28,8 @@ const FileManager = {
       castPath: '',
       castName: '',
       castFolder: '',
+      // Files whose thumbnail could not be generated (icon fallback)
+      noThumb: {},
       // scroll position memory, keyed by folder path (shared across instances)
       _scrollMem: SCROLL_MEM,
     };
@@ -35,6 +37,9 @@ const FileManager = {
 
   computed: {
     s() { return SettingsStore.settings; },
+
+    /** TV mode browses media only, by remote. */
+    tvMode() { return TvMode.state.enabled; },
 
     crumbs() {
       if (!this.data || !this.data.path) return [];
@@ -53,8 +58,12 @@ const FileManager = {
       if (!this.data) return [];
       let items = this.data.contents;
 
-      // "Videos only" mode: keep videos and folders
-      if (this.s.hideNonVideos) {
+      // TV mode only browses media (folders + videos, images, audio), so a
+      // remote never lands on a README, an .nfo or a subtitle file.
+      if (this.tvMode) {
+        items = items.filter(i => i.isDirectory || i.isVideo || i.isImage || i.isAudio);
+      } else if (this.s.hideNonVideos) {
+        // "Videos only" mode: keep videos and folders
         items = items.filter(i => i.isDirectory || i.isVideo);
       }
 
@@ -80,6 +89,25 @@ const FileManager = {
     activeDrive() {
       if (!this.data) return null;
       return this.drives.find(d => this.data.path.startsWith(d.path)) || null;
+    },
+
+    emptyMessage() {
+      if (this.searchText) return `Nothing matches “${this.searchText}”`;
+      if (this.tvMode) return 'No videos, images or audio in this folder';
+      return 'Empty folder';
+    },
+
+    /** Icon of the button that switches to the next display mode. */
+    viewToggleIcon() {
+      if (this.s.viewMode === 'list') return 'grid';
+      if (this.s.viewMode === 'gallery') return 'gridLarge';
+      return 'list';
+    },
+
+    viewToggleTitle() {
+      if (this.s.viewMode === 'list') return 'Small gallery view';
+      if (this.s.viewMode === 'gallery') return 'Large gallery view';
+      return 'List view';
     },
   },
 
@@ -328,16 +356,19 @@ const FileManager = {
         </div>
 
         <div class="toolbar-buttons">
-          <button class="chip-toggle" :class="{on: s.hideNonVideos}"
+          <span v-if="tvMode" class="tv-only-badge" title="TV mode shows media files only">
+            <ui-icon name="eye" :size="20"></ui-icon>
+            <span>Media</span>
+          </span>
+          <button v-else class="chip-toggle" :class="{on: s.hideNonVideos}"
                   @click="s.hideNonVideos = !s.hideNonVideos"
                   :title="s.hideNonVideos ? 'Showing videos & folders only' : 'Showing all files'">
             <ui-icon :name="s.hideNonVideos ? 'eye' : 'eyeOff'" :size="20"></ui-icon>
             <span>Videos</span>
           </button>
 
-          <button class="icon-btn" @click="s.viewMode = s.viewMode === 'list' ? 'grid' : 'list'"
-                  :title="s.viewMode === 'list' ? 'Grid view' : 'List view'">
-            <ui-icon :name="s.viewMode === 'list' ? 'grid' : 'list'"></ui-icon>
+          <button class="icon-btn" @click="cycleViewMode" :title="viewToggleTitle">
+            <ui-icon :name="viewToggleIcon"></ui-icon>
           </button>
 
           <select v-model="s.sortOrder" class="sort-select" title="Sort order"
@@ -375,14 +406,14 @@ const FileManager = {
 
       <div v-else-if="visibleItems.length === 0" class="state-block">
         <ui-icon name="folder" :size="48"></ui-icon>
-        <p>{{ searchText ? 'Nothing matches “' + searchText + '”' : 'Empty folder' }}</p>
+        <p>{{ emptyMessage }}</p>
       </div>
 
       <!-- ── File list ───────────────────────────────────────────────── -->
       <ul v-else-if="s.viewMode === 'list'" class="file-list">
         <li v-for="item in visibleItems" :key="item.path" :class="{ 'has-menu': item.isDirectory || item.isVideo }">
           <button class="file-row" @click="openItem(item)">
-            <span class="file-icon" :class="item.isDirectory ? 'is-folder' : (item.isVideo ? 'is-video' : (item.isImage ? 'is-image' : 'is-file'))">
+            <span class="file-icon" :class="itemClass(item)">
               <ui-icon :name="itemIcon(item)" :size="26"></ui-icon>
             </span>
             <span class="file-text">
@@ -417,15 +448,22 @@ const FileManager = {
         </li>
       </ul>
 
-      <div v-else class="file-grid">
-        <div v-for="item in visibleItems" :key="item.path" class="grid-cell">
-          <button class="grid-card" @click="openItem(item)">
-            <span class="grid-icon" :class="item.isDirectory ? 'is-folder' : (item.isVideo ? 'is-video' : (item.isImage ? 'is-image' : 'is-file'))">
-              <ui-icon :name="itemIcon(item)" :size="44"></ui-icon>
+      <!-- ── Gallery: small (gallery) or large (gallery-lg) thumbnails ── -->
+      <div v-else class="gallery-grid" :class="{ 'gallery-lg': s.viewMode === 'gallery-lg' }">
+        <div v-for="item in visibleItems" :key="item.path" class="gallery-cell">
+          <button class="gallery-card" @click="openItem(item)">
+            <span class="gallery-thumb" :class="itemClass(item)">
+              <img v-if="hasThumb(item)" class="thumb-img" :src="thumbUrl(item)"
+                   loading="lazy" decoding="async" alt="" @error="onThumbError(item)">
+              <ui-icon v-else :name="itemIcon(item)" :size="46"></ui-icon>
+              <span v-if="item.isVideo" class="gallery-play">
+                <ui-icon name="play" :size="18"></ui-icon>
+              </span>
             </span>
-            <span class="grid-name">{{ item.name }}</span>
-            <span class="grid-sub">{{ itemSub(item) }}</span>
-            <span v-if="item.isVideo" class="grid-play"><ui-icon name="play" :size="18"></ui-icon></span>
+            <span class="gallery-text">
+              <span class="gallery-name">{{ item.name }}</span>
+              <span class="gallery-sub">{{ itemSub(item) }}</span>
+            </span>
           </button>
 
           <!-- Row context menu (⋮): folder actions / video cast -->

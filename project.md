@@ -511,3 +511,69 @@ up on the next load from `SettingsStore.settings.tvMode` (new default `false`).
   an expression), string concatenations became template literals, `!= null`
   was inverted, and `window.FileManager = FileManager` documents the global.
 - `README.md` feature list documents TV mode.
+
+## 2026-11-13 — Gallery views, TV follow-ups, thumbnails
+
+Six requests in one pass: three display modes (with real thumbnails), TV-mode
+hiding rules, TV focus fixes and player/settings polish.
+
+- **Server: media flags + thumbnails**
+  - `AUDIO_EXT` / `isAudio()` and an `isAudio` flag on `/api/browse` entries
+    (audio files are now first-class rows: they show a music icon and are no
+    longer mistaken for generic files).
+  - `GET /api/thumb?path=…` → 480 px-wide JPEG, a frame ~2 s into videos
+    (falls back to frame 0 for very short clips) or the scaled image for
+    pictures, produced with `ffmpeg -vf scale='min(480,iw)':-2`.
+  - Cached in `CACHE_DIR/thumbs` keyed by `sha1(path|mtimeMs|size|width)` —
+    the client appends `&v=<mtime>` so the response is cacheable. Misses go
+    through `withThumbSlot()` (2 concurrent ffmpeg runs, 20 s kill timer) and
+    identical keys share one promise (`thumbJobs`). 404 when there is no
+    still frame (audio/text) so the client can fall back to an icon; the
+    temp file is written next to the final one and `rename`d into place.
+- **Three display modes** — `settings.viewMode` is now
+  `'list' | 'gallery' | 'gallery-lg'` (saved `'grid'` migrates to `'gallery'`).
+  The toolbar button cycles list → gallery → large → list;
+  `Settings → Layout` offers all three. The gallery replaces the old
+  icon-only `file-grid`: `.gallery-grid` (auto-fill 168 px / 300 px) with
+  `.gallery-card` → a 16:9 `.gallery-thumb` (identical shape for every item)
+  plus name/subtitle, `img.thumb-img` lazy-loaded, `@error` → `noThumb[path]`
+  so a missing preview swaps to the type icon. Folders, audio and other
+  files keep the icon tile in the same shape.
+- **TV mode hides non-media** — `visibleItems` filters to
+  folders/videos/images/audio while TV mode is on (the toolbar's “Videos”
+  chip becomes a non-interactive “Media” badge, since the filter is
+  implicit), and the empty state says “No videos, images or audio in this
+  folder”.
+- **TV mode defaults to the big gallery** — enabling TV mode sets
+  `viewMode = 'gallery-lg'`, leaving it restores `'list'` (in `TvMode.apply`).
+- **Play/pause in the player's bottom bar** — new `vc-btn` between
+  previous/next, rendered only in TV mode (`VideoPlayer.tvMode`), because
+  there the video surface has no click-to-toggle. `hideControls()` now
+  returns early in TV mode so the overlay (the only remote-navigable thing)
+  can never disappear and strand the focus ring.
+- **Getting back from the queue to the player** (was impossible): the player
+  page keeps its video area sticky, so the queue scrolls *underneath* it and
+  the geometry said “up” to rows that were painted over by the player.
+  `isVisible()` now rejects candidates whose centre is covered by another
+  element (`isCovered()` via `document.elementFromPoint`, skipped for
+  off-screen targets which `scrollIntoView` will bring in), and
+  `hit.contains(el)` keeps the player's own controls valid. The cover test
+  also stops the sticky header from swallowing rows.
+- **Empty folder starts on “Up one level”** — `PREFER` now asks for
+  `main .up-btn` before `main .drive-chip`, and `main .gallery-card` joined
+  `main .file-row` (so a drive shortcut is never the default).
+- **Selects only take the arrows once opened** — settings pages were
+  impossible to traverse because the focused `<select>` ate ↑/↓ natively.
+  The native exemption is gone; `activate()` on a `<select>` now *arms* it
+  (`armSelect`, dashed ring via `.tv-armed`), ↑/↓ then step `selectedIndex`
+  and replay `input`/`change`, and Enter/Escape/←/→ (or losing focus)
+  disarm it and let navigation continue. `onKeyDown` was split into
+  `handleArmedSelect` / `handleDirection` / `isActivateKey` helpers.
+- New icons: `musicNote`, `gridLarge`; `--audio` / `--audio-soft` theme vars
+  and `.is-audio` classes (list rows, gallery tiles).
+- Verified with two DOM harnesses (`/tmp`, not committed): 23 navigation
+  checks plus 17 new ones (cover-aware navigation, empty-folder focus,
+  gallery preference, select arming, TV default layout), `node --check` on
+  every touched script, and a live-server smoke test of `/api/thumb`
+  (video 480x270 JPEG, image 480 px wide, cached hit 0.9 ms, 404 for audio,
+  400 for a directory/bad path) and the `isAudio` browse flag.

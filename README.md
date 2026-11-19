@@ -7,7 +7,13 @@ segment is transcoded when you reach it.
 
 ## Features
 
-- Browse the entire filesystem (folders, videos, images)
+- Browse the entire filesystem (folders, videos, images, audio)
+- **Three display modes** for every folder — the compact list, a **gallery**
+  of 16:9 thumbnails and a **large gallery** — switched with the toolbar
+  button (list → gallery → large → list) or in Settings. Thumbnails are
+  rendered with ffmpeg on first view and cached in the temp dir, so a
+  folder only pays that cost once; files without a preview (audio, text)
+  fall back to their type icon
 - On-demand HLS transcoding — start watching instantly, seek anywhere
 - Hardware-accelerated transcoding when available (NVIDIA NVENC/NVDEC,
   Intel QSV, AMD AMF, VAAPI), automatic fallback to software
@@ -52,10 +58,14 @@ segment is transcoded when you reach it.
   header: ←/→/↑/↓ move the focus between buttons, rows and controls, Enter
   or Space activates, Backspace closes the open menu/dialog, leaves
   fullscreen, goes up a folder or goes back. On a focused slider ←/→ step
-  the value (seek 10 s, volume 5 %) while ↑/↓ leave it. Gamepads are read
-  through the Gamepad API (D-pad, left stick, A = select, B = back); the
-  mode is remembered per browser
-- Dark / light themes, list/grid browsing, search and sorting
+  the value (seek 10 s, volume 5 %) while ↑/↓ leave it; a dropdown only
+  takes the arrows after it has been opened. The player gets a play/pause
+  button in its control bar. TV mode also hides everything that is not
+  media (folders, videos, images and audio only) and starts on the large
+  gallery layout — leaving it restores the list. Gamepads are read through
+  the Gamepad API (D-pad, left stick, A = select, B = back); the mode is
+  remembered per browser
+- Dark / light themes, search and sorting
 
 ## Run directly (Node.js)
 
@@ -129,6 +139,18 @@ first use). In Docker it is persisted via the `srvfiles-data` volume.
 
 - `GET /api/video/raw?path=/some/file.mp4` — the original file, with
   HTTP Range support (works in VLC's "Open Network Stream", etc.)
+
+## API (thumbnails / browsing)
+
+- `GET /api/browse?path=/some/folder` — directory listing; every entry
+  carries `isDirectory` / `isVideo` / `isImage` / `isAudio` flags so the
+  client can filter without knowing the extension lists
+- `GET /api/thumb?path=/some/file.mp4` — a 480 px-wide JPEG preview
+  (a frame ~2 s in for videos, the scaled image for pictures). Generated
+  with ffmpeg on first request, cached in the OS temp dir keyed by
+  path + mtime + size, at most two ffmpeg runs at a time. Responds 404
+  when a file has no still frame (audio, text, …) so the UI can fall back
+  to an icon
 
 ## API (casting to a Castor receiver)
 

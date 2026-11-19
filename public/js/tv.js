@@ -42,8 +42,18 @@ const TvMode = (function () {
   /** Overlay layers — while one is open, navigation stays inside it. */
   const LAYERS = '.modal-root, .settings-root, .vc-quality, .row-menu, .tag-fs';
 
-  /** Focus preference when a view is (re)focused: content first, not the header. */
-  const PREFER = ['.vc-center', 'main .file-row', 'main .grid-card', 'main .drive-chip', 'main button', 'button'];
+  /**
+   * Focus preference when a view is (re)focused: the content first, never the
+   * header. `main .up-btn` comes before the drive chips so an empty folder
+   * starts on “Up one level” instead of jumping to a drive shortcut.
+   */
+  const PREFER = [
+    '.vc-center',
+    'main .file-row', 'main .gallery-card',
+    'main .up-btn',
+    'main .drive-chip',
+    'main button', 'button',
+  ];
 
   const GAMEPAD_ACTIONS = { 0: 'select', 1: 'back', 12: 'up', 13: 'down', 14: 'left', 15: 'right' };
 
@@ -52,6 +62,7 @@ const TvMode = (function () {
   let hintTimer = null;
   let navTimer = null;     // pending refocus retry
   let synthetic = false;   // guards re-entrancy of our own dispatched events
+  let armedSelect = null;  // <select> that took the arrow keys (see armSelect)
   const padHeld = new Map();
 
   /* ═══ Visibility ═══════════════════════════════════════════════════════ */
@@ -70,7 +81,31 @@ const TvMode = (function () {
     const style = getComputedStyle(el);
     if (style.display === 'none' || style.visibility === 'hidden') return false;
     if (Number(style.opacity) === 0) return false;
-    return hasPointerEvents(el);
+    // A zero-sized control (e.g. a slider that only expands on hover) would
+    // be an invisible focus stop; TV mode gives those a size in CSS instead.
+    const r = el.getBoundingClientRect();
+    if (r.width < 4 || r.height < 4) return false;
+    return hasPointerEvents(el) && !isCovered(el);
+  }
+
+  /**
+   * True when another element is painted over the middle of `el`.
+   *
+   * The player page keeps its video area sticky, so the queue below scrolls
+   * underneath it: without this test the focus ring could land on a row that
+   * is hidden behind the player and never come back to the visible controls.
+   * Targets outside the viewport are not tested — there is nothing to hit-test
+   * against, and `scrollIntoView` brings them in once they take the focus.
+   */
+  function isCovered(el) {
+    if (!document.elementFromPoint) return false;
+    const r = el.getBoundingClientRect();
+    const x = r.left + r.width / 2;
+    const y = r.top + r.height / 2;
+    if (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight) return false;
+    const hit = document.elementFromPoint(x, y);
+    if (!hit) return false;
+    return hit !== el && !el.contains(hit) && !hit.contains(el);
   }
 
   function hasPointerEvents(el) {
@@ -218,9 +253,41 @@ const TvMode = (function () {
     const el = ensureFocus();
     if (!el || el === document.body) return;
     if (el.tagName === 'INPUT' && el.type === 'range') return; // nothing to activate
-    if (el.tagName === 'SELECT') { el.focus(); return; }       // let the browser open it
+    if (el.tagName === 'SELECT') { armSelect(el); return; }    // see armSelect
     el.click();
     afterActivate();
+  }
+
+  /* ═══ Selects (arrow keys only after the select is opened) ════════════ */
+
+  /**
+   * A <select> must not swallow the navigation keys just because it happens
+   * to have the focus: on a settings page that makes the highlight jump from
+   * list to list instead of moving on. It only takes ↑/↓ after being opened
+   * (Enter/Space or a click), shows that with a dashed ring, and gives the
+   * keys back on Enter/Escape/←/→ or when the focus leaves.
+   */
+  function armSelect(el) {
+    disarmSelect();
+    armedSelect = el;
+    el.classList.add('tv-armed');
+  }
+
+  function disarmSelect() {
+    if (!armedSelect) return;
+    armedSelect.classList.remove('tv-armed');
+    armedSelect = null;
+  }
+
+  /** Move the selection of an armed <select> and fire the same events a picker would. */
+  function stepSelect(el, dir) {
+    const count = el.options ? el.options.length : 0;
+    if (!count) return;
+    const next = Math.max(0, Math.min(count - 1, el.selectedIndex + (dir === 'down' ? 1 : -1)));
+    if (next === el.selectedIndex) return;
+    el.selectedIndex = next;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
   /**
@@ -337,6 +404,28 @@ const TvMode = (function () {
     e.stopImmediatePropagation();
   }
 
+  function isActivateKey(key) {
+    return key === 'Enter' || key === ' ' || key === 'Spacebar' || key === 'Select';
+  }
+
+  /** An armed <select> owns ↑/↓ until it is closed again. */
+  function handleArmedSelect(e, key, dir) {
+    if (!armedSelect || document.activeElement !== armedSelect) return false;
+    if (dir === 'up' || dir === 'down') { consume(e); stepSelect(armedSelect, dir); return true; }
+    if (dir) { disarmSelect(); return false; }   // ←/→ leave the select, then navigate on
+    if (isActivateKey(key) || key === 'Escape') { consume(e); disarmSelect(); return true; }
+    return false;
+  }
+
+  /** ←/→ adjust a slider, ↑/↓ leave it; everything else moves the focus. */
+  function handleDirection(e, active, dir) {
+    const isRange = !!active && active.tagName === 'INPUT' && active.type === 'range';
+    if (isRange && (dir === 'left' || dir === 'right')) {
+      consume(e); stepRange(active, dir); return;
+    }
+    consume(e); moveFocus(dir);
+  }
+
   function onKeyDown(e) {
     if (!state.enabled || synthetic) return;
     if (e.ctrlKey || e.metaKey || e.altKey) return; // leave browser/app chords alone
@@ -352,25 +441,10 @@ const TvMode = (function () {
     }
 
     const dir = DIRS[key];
-    if (dir) {
-      const isRange = active && active.tagName === 'INPUT' && active.type === 'range';
-      // ←/→ adjust a slider; ↑/↓ leave it (see stepRange)
-      if (isRange && (dir === 'left' || dir === 'right')) {
-        consume(e); stepRange(active, dir); return;
-      }
-      if (active && active.tagName === 'SELECT' && (dir === 'up' || dir === 'down')) {
-        return; // native <select> owns up/down
-      }
-      consume(e); moveFocus(dir); return;
-    }
-
-    if (key === 'Enter' || key === ' ' || key === 'Spacebar' || key === 'Select') {
-      consume(e); activate(); return;
-    }
-
-    if (BACK_KEYS.indexOf(key) !== -1) {
-      consume(e); goBack();
-    }
+    if (handleArmedSelect(e, key, dir)) return;
+    if (dir) { handleDirection(e, active, dir); return; }
+    if (isActivateKey(key)) { consume(e); activate(); return; }
+    if (BACK_KEYS.indexOf(key) !== -1) { consume(e); goBack(); }
   }
 
   function onFocusIn(e) {
@@ -378,6 +452,7 @@ const TvMode = (function () {
   }
 
   function onFocusOut(e) {
+    if (armedSelect && e.target === armedSelect) disarmSelect();
     if (!e.relatedTarget) markFocus(null);
   }
 
@@ -456,6 +531,8 @@ const TvMode = (function () {
   function apply(on) {
     document.documentElement.classList.toggle('tv-mode', on);
     if (on) {
+      // TV mode is a 10-foot UI: start on the large gallery layout
+      SettingsStore.settings.viewMode = 'gallery-lg';
       document.addEventListener('keydown', onKeyDown, true);
       document.addEventListener('focusin', onFocusIn, true);
       document.addEventListener('focusout', onFocusOut, true);
@@ -464,10 +541,13 @@ const TvMode = (function () {
       requestAnimationFrame(() => focusFirst());
       return;
     }
+    // Back to the desktop default
+    SettingsStore.settings.viewMode = 'list';
     document.removeEventListener('keydown', onKeyDown, true);
     document.removeEventListener('focusin', onFocusIn, true);
     document.removeEventListener('focusout', onFocusOut, true);
     stopGamepadLoop();
+    disarmSelect();
     markFocus(null);
     const el = document.activeElement;
     if (el && el !== document.body && el.blur) el.blur();

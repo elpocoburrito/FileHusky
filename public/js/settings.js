@@ -8,7 +8,7 @@ const SettingsStore = (function () {
     tvMode: false,               // remote/controller navigation (TV icon in the header)
     // Files & folders
     hideNonVideos: false,        // only show videos + folders while browsing
-    viewMode: 'list',            // 'list' | 'grid'
+    viewMode: 'list',            // 'list' | 'gallery' | 'gallery-lg'
     sortOrder: 'name-asc',       // name-asc | name-desc | size-asc | size-desc | date-desc | date-asc
     // Video playback
     autoplay: true,              // start playing when a video is opened
@@ -25,6 +25,8 @@ const SettingsStore = (function () {
 
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem(KEY)) || {}; } catch (_) {}
+  // 'grid' (icon cards) was replaced by the small gallery view
+  if (saved.viewMode === 'grid') saved.viewMode = 'gallery';
 
   const settings = Vue.reactive(Object.assign({}, DEFAULTS, saved));
 
