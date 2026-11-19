@@ -1,0 +1,25 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oxc-project/oxc/main/npm/oxlint/configuration_schema.json",
+  "env": {
+    "browser": true,
+    "es2022": true
+  },
+  "globals": {
+    "Vue": "readonly",
+    "Hls": "readonly",
+    "Utils": "readonly",
+    "SettingsStore": "readonly",
+    "CastStore": "readonly",
+    "TvMode": "readonly",
+    "ICONS": "readonly",
+    "UiIcon": "readonly",
+    "ToggleSwitch": "readonly",
+    "FileManager": "readonly",
+    "HomePage": "readonly",
+    "VideoPlayer": "readonly",
+    "SettingsPanel": "readonly",
+    "TagManager": "readonly",
+    "TagPanel": "readonly",
+    "CastPanel": "readonly"
+  }
+}

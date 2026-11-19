@@ -2,6 +2,10 @@
 
 /* global Vue, Utils, SettingsStore */
 
+// Shared scroll memory, keyed by folder path and kept across instances
+// (the browse view is re-created on every navigation).
+const SCROLL_MEM = {};
+
 const FileManager = {
   name: 'FileManager',
   props: {
@@ -25,7 +29,7 @@ const FileManager = {
       castName: '',
       castFolder: '',
       // scroll position memory, keyed by folder path (shared across instances)
-      _scrollMem: FileManager._scrollMem || (FileManager._scrollMem = {}),
+      _scrollMem: SCROLL_MEM,
     };
   },
 
@@ -126,13 +130,13 @@ const FileManager = {
         if (this.s.rememberPath) {
           try { localStorage.setItem('srvfiles-lastpath', dirPath); } catch {}
         }
-        const data = await Utils.api('/api/browse?path=' + encodeURIComponent(dirPath));
+        const data = await Utils.api(`/api/browse?path=${encodeURIComponent(dirPath)}`);
         this.data = data;
-        document.title = (data.path === '/' || /\\$/.test(data.path) ? 'SrvFiles' : data.path.split(/[\\/]/).pop()) + ' — SrvFiles';
+        document.title = (data.path === '/' || data.path.endsWith('\\') ? 'SrvFiles' : data.path.split(/[\\/]/).pop()) + ' — SrvFiles';
         await this.$nextTick();
         const savedScroll = this._scrollMem[data.path];
-        if (savedScroll != null) window.scrollTo(0, savedScroll);
-        else window.scrollTo(0, 0);
+        if (savedScroll == null) window.scrollTo(0, 0);
+        else window.scrollTo(0, savedScroll);
       } catch (e) {
         this.error = e.message;
         this.data = null;
@@ -195,7 +199,7 @@ const FileManager = {
 
     itemSub(item) {
       if (item.isDirectory) return 'Folder';
-      return Utils.formatSize(item.size) + ' · ' + Utils.formatDate(item.mtime);
+      return `${Utils.formatSize(item.size)} · ${Utils.formatDate(item.mtime)}`;
     },
 
     // ── Folder context menu (⋮): zip download + delete ─────────────────
@@ -214,8 +218,8 @@ const FileManager = {
     downloadZip(item) {
       this.closeMenu();
       const a = document.createElement('a');
-      a.href = '/api/download/zip?path=' + encodeURIComponent(item.path);
-      a.download = item.name + '.zip';
+      a.href = `/api/download/zip?path=${encodeURIComponent(item.path)}`;
+      a.download = `${item.name}.zip`;
       document.body.append(a);
       a.click();
       a.remove();
@@ -223,9 +227,9 @@ const FileManager = {
 
     async deleteFolder(item) {
       this.closeMenu();
-      if (!confirm('Delete folder “' + item.name + '” and ALL of its contents?\n\nThis cannot be undone.')) return;
+      if (!confirm(`Delete folder “${item.name}” and ALL of its contents?\n\nThis cannot be undone.`)) return;
       try {
-        await Utils.api('/api/folder?path=' + encodeURIComponent(item.path), { method: 'DELETE' });
+        await Utils.api(`/api/folder?path=${encodeURIComponent(item.path)}`, { method: 'DELETE' });
         // If the deleted folder contains the folder we are browsing, go up
         const cur = this.data ? this.data.path : '';
         if (cur === item.path || cur.startsWith(item.path + '/') || cur.startsWith(item.path + '\\')) {
@@ -445,3 +449,6 @@ const FileManager = {
   </div>
   `,
 };
+
+// Classic script: registered by app.js through the global scope.
+window.FileManager = FileManager;
