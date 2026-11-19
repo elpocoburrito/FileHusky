@@ -5,6 +5,7 @@ const SettingsStore = (function () {
   const DEFAULTS = {
     // Appearance
     theme: 'dark',               // 'dark' | 'light'
+    tvMode: false,               // remote/controller navigation (TV icon in the header)
     // Files & folders
     hideNonVideos: false,        // only show videos + folders while browsing
     viewMode: 'list',            // 'list' | 'grid'

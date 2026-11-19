@@ -432,3 +432,82 @@ Caveat recorded for later: on Firefox < 144 the automatic landscape rotation
 cannot be driven by `screen.orientation.lock()` at all — whatever landscape is
 seen there is Firefox's own fullscreen behaviour, so the rule is "do not
 disturb it" rather than "force it".
+
+## 2026-11-12 — TV mode (remotes, controllers, keyboard-only)
+
+A pointer-free navigation mode for watching on a TV: toggled by a TV icon in
+every page header (`tv-toggle`, right before the settings button) and picked
+up on the next load from `SettingsStore.settings.tvMode` (new default `false`).
+
+- **New `public/js/tv.js`** — a `TvMode` store (reactive `state.enabled`,
+  mirrored from `SettingsStore.settings.tvMode`, so the icon, a settings reset
+  and a direct write all converge) plus the navigation engine, exposed as
+  `window.TvMode` like the other stores. Loaded right after `settings.js` so
+  components can use `<tv-toggle>`.
+- **Keys** (all handled in one capture-phase `keydown` listener on `document`
+  that `preventDefault()`s and `stopImmediatePropagation()`s what it owns, so
+  the player's own hotkeys never see them):
+  - ←/→/↑/↓ move focus to the nearest focusable element in that direction
+  - Enter/Space activate the focused element; Backspace goes back
+  - Escape is treated as Backspace (same key on most remotes)
+  - text fields keep every key (a keyboard can type, a remote cannot) —
+    Escape leaves the field
+- **Spatial navigation** (`moveFocus`): candidates in the same direction are
+  scored by primary distance, preferring those whose perpendicular projection
+  overlaps the current element — a file list therefore walks row by row
+  instead of jumping to a closer button beside the row. Off-axis candidates
+  are penalised `secondary * 2`; at the end of a list the direction wraps.
+- **Layers**: `.modal-root`, `.settings-root`, `.vc-quality`, `.row-menu`,
+  `.tag-fs` are scopes — while one is open, arrows stay inside it. Backspace
+  first re-dispatches Escape on the focused element so the app's existing
+  Escape handlers close dialogs/menus; if the layer survives that (the
+  settings sheet has no Escape handler) the layer's close button is clicked.
+- **Back**: `tv-back` CustomEvent first (FileManager cancels it to go up a
+  folder), then `history.back()`, then a hash fallback to `#/home` when a
+  deep link had no history to pop. Before any of that, a Back press leaves
+  fullscreen (a remote has a single back key) and closes the open layer, in
+  that order: layer → fullscreen → folder up / history → home.
+- **Ranges mean “adjust”**: on `input[type=range]` ←/→ step the value by
+  `data-tv-step` instead of moving focus (seek = 10 s, volume = 5 %) and
+  replay `input` + `change` so the existing preview/commit handlers run.
+  ↑/↓ leave the slider — letting all four arrows adjust it would trap the
+  focus there, since a remote has no Tab key. `<select>` keeps its native
+  up/down behaviour.
+- **Gamepads** (Gamepad API, polled with `requestAnimationFrame` only while
+  the mode is on): D-pad buttons 12–15, left stick with a 0.6 deadzone, A
+  (0) = select, B (1) = back; edge-triggered, then 350 ms delay + 140 ms
+  repeat for held directions.
+- **Focus ring**: a `.tv-focus` class (programmatic focus does not always
+  match `:focus-visible`) maintained by `focusin`/`focusout`, styled as a
+  3 px accent outline + soft halo, with a larger root font size.
+- **`visibility` filter** ignores elements with no client rects, `display:
+  none`, `opacity: 0`, or `pointer-events: none` on themselves *or any
+  ancestor* — the player hides its bars on the `.vcontrols` / `.vc-top`
+  container and `pointer-events` does not inherit, so walking the chain is
+  what keeps invisible controls out of the ring.
+- **VideoPlayer** — `scheduleHide()` returns early while TV mode is on (the
+  overlay is the only thing a remote can navigate, so it must not disappear),
+  a new document `focusin` handler (`onTvFocusIn`) reveals the controls when
+  the ring enters `.video-area`, and a `phase` watcher parks the focus on
+  `.vc-center` once playback is ready. Seek/volume sliders carry
+  `data-tv-step`.
+- **Focus on navigation** — `hashchange` → `TvMode.refocus()` waits (up to
+  ~1.6 s) until `main` has focusable content, then focuses the preferred
+  element (`.vc-center`, first file row/card, drive chip, else any button)
+  without scrolling (the router already reset the scroll position).
+- **CSS** (`style.css`, “TV mode” block): focus ring, filled state for the
+  header toggle, and a `.tv-hint` toast that explains the controls for ~3 s
+  when the mode is switched on or off.
+- Gotcha fixed along the way: the engine's re-dispatched Escape must not be
+  re-handled by itself — a `synthetic` flag guards `dispatchEscape()`.
+- **New `.oxlintrc.json`** (repo root) declares the classic-script globals
+  (`Utils`, `SettingsStore`, `CastStore`, `TvMode`, components, …) with
+  `env.browser`. oxlint's `no-undeclared-variables` ignores `/* global */`
+  comments, so every touched component file otherwise drowned in false
+  “undeclared” errors.
+- FileManager cleanup while touching it (lint hygiene): the shared scroll
+  memory is now a module-level `SCROLL_MEM` (was
+  `FileManager._scrollMem || (FileManager._scrollMem = {})`, an assignment in
+  an expression), string concatenations became template literals, `!= null`
+  was inverted, and `window.FileManager = FileManager` documents the global.
+- `README.md` feature list documents TV mode.

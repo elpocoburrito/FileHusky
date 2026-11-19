@@ -47,6 +47,14 @@ segment is transcoded when you reach it.
   press **Disconnect & watch here**; the session survives a reload, and
   when the video ends the next file in the folder is cast automatically
   (honours the “auto next” setting)
+- **TV mode** — pointer-free navigation for Bluetooth remotes, game
+  controllers and keyboard-only setups. Toggle it with the TV icon in the
+  header: ←/→/↑/↓ move the focus between buttons, rows and controls, Enter
+  or Space activates, Backspace closes the open menu/dialog, leaves
+  fullscreen, goes up a folder or goes back. On a focused slider ←/→ step
+  the value (seek 10 s, volume 5 %) while ↑/↓ leave it. Gamepads are read
+  through the Gamepad API (D-pad, left stick, A = select, B = back); the
+  mode is remembered per browser
 - Dark / light themes, list/grid browsing, search and sorting
 
 ## Run directly (Node.js)

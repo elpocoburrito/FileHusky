@@ -1875,3 +1875,62 @@ button {
 .row-menu-item:hover { background: var(--surface-2); }
 .row-menu-item.danger { color: var(--danger); }
 .row-menu-item.danger:hover { background: var(--danger-soft); }
+
+/* ─── TV mode (remote / controller / keyboard-only navigation) ─────────────
+   The engine lives in js/tv.js: it moves focus between focusable elements
+   with the arrow keys, so the only visual requirement is a focus ring that is
+   readable from across a room. Programmatic focus does not always match
+   :focus-visible, hence the explicit `.tv-focus` class.                      */
+
+.tv-mode { cursor: default; }
+
+.tv-mode body { font-size: 17px; }
+
+.tv-mode .tv-focus {
+  outline: 3px solid var(--accent);
+  outline-offset: 3px;
+  box-shadow: 0 0 0 7px var(--accent-soft);
+}
+
+.tv-mode .file-row.tv-focus,
+.tv-mode .grid-card.tv-focus { background: var(--surface-2); }
+
+.tv-mode .icon-btn.tv-focus,
+.tv-mode .crumb.tv-focus,
+.tv-mode .drive-chip.tv-focus { background: var(--accent-soft); }
+
+/* Sliders get a ring on the invisible thumb track, so show where focus is */
+.tv-mode .vc-seek.tv-focus,
+.tv-mode .vc-vol-slider.tv-focus {
+  outline: 3px solid var(--accent);
+  outline-offset: 6px;
+}
+
+/* Header toggle: filled when TV mode is on */
+.tv-toggle.on { color: var(--accent); background: var(--accent-soft); }
+
+/* Transient hint shown when the mode is toggled */
+.tv-hint {
+  position: fixed;
+  left: 50%;
+  bottom: calc(24px + env(safe-area-inset-bottom));
+  z-index: 200;
+  transform: translateX(-50%);
+  max-width: min(92vw, 640px);
+  padding: 12px 18px;
+  border-radius: 12px;
+  background: var(--surface);
+  border: 1px solid var(--outline);
+  box-shadow: var(--shadow);
+  color: var(--text);
+  font-size: 0.95rem;
+  font-weight: 500;
+  text-align: center;
+  animation: tv-hint-in 0.18s ease-out;
+  pointer-events: none;
+}
+
+@keyframes tv-hint-in {
+  from { opacity: 0; transform: translate(-50%, 8px); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
+}

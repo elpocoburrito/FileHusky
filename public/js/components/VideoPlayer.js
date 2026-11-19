@@ -1,6 +1,6 @@
 /* ─── VideoPlayer: dedicated playback page ───────────────────────────────── */
 
-/* global Vue, Utils, SettingsStore, Hls, CastStore */
+/* global Vue, Utils, SettingsStore, Hls, CastStore, TvMode */
 
 const VIDEO_EXT_DIRECT = new Set(['.mp4', '.m4v', '.mov', '.webm', '.m4v']);
 const DIRECT_VIDEO_CODECS = new Set(['h264', 'vp9', 'av1']);
@@ -239,14 +239,26 @@ const VideoPlayer = {
       this.onCastPlayback(pb);
     },
 
+    // Ready to play: in TV mode the remote should land on the player controls
+    // (they only exist once the phase is `ready`).
+    phase(value) {
+      if (value !== 'ready' || !TvMode.state.enabled) return;
+      const active = document.activeElement;
+      if (active && active.closest && active.closest('.video-area')) return;
+      setTimeout(() => { if (TvMode.state.enabled) TvMode.focusFirst(false); }, 60);
+    },
+
     // Casting session started/stopped elsewhere (CastPanel, disconnect…)
     'cast.active'(active) {
       this.onCastActive(active);
     },
   },
 
+  // TV mode adds a document-level `focusin` listener here: the player is the
+  // only view whose controls can be hidden while still focusable.
   async mounted() {
     document.addEventListener('keydown', this.onKey);
+    document.addEventListener('focusin', this.onTvFocusIn);
     document.addEventListener('fullscreenchange', this.onFullscreenChange);
     document.addEventListener('orientationchange', this.onOrientationChange);
     this.onOrientationChange();
@@ -258,6 +270,7 @@ const VideoPlayer = {
 
   beforeUnmount() {
     document.removeEventListener('keydown', this.onKey);
+    document.removeEventListener('focusin', this.onTvFocusIn);
     document.removeEventListener('fullscreenchange', this.onFullscreenChange);
     document.removeEventListener('orientationchange', this.onOrientationChange);
     this.stopClock();
@@ -955,6 +968,12 @@ const VideoPlayer = {
       return (e && e.pointerType) || (this.isTouchDevice() ? 'touch' : 'mouse');
     },
 
+    /** TV focus entered the player — make sure the controls it targets are shown */
+    onTvFocusIn(e) {
+      if (!TvMode.state.enabled || this.phase !== 'ready') return;
+      if (e.target && e.target.closest && e.target.closest('.video-area')) this.showControls();
+    },
+
     /** Pointer moved over the player — reveal controls (mouse only) */
     onPointerMove(e) {
       if (this.pointerTypeOf(e) !== 'mouse') return;
@@ -1080,6 +1099,10 @@ const VideoPlayer = {
 
     scheduleHide() {
       this.clearHideTimer();
+      // TV mode keeps the overlay open: it is the only thing a remote can
+      // navigate, so letting it hide would leave the focus ring floating over
+      // controls that are no longer visible.
+      if (TvMode.state.enabled) return;
       const player = this.$refs.video;
       if (!player || player.paused) return; // always show controls when paused
       this.hideTimer = setTimeout(() => this.hideControls(), 3000);
@@ -1354,6 +1377,7 @@ const VideoPlayer = {
         <button class="icon-btn" @click="openTagManager" title="Manage tags">
           <ui-icon name="label"></ui-icon>
         </button>
+        <tv-toggle></tv-toggle>
         <button class="icon-btn" @click="$emit('open-settings')" title="Settings">
           <ui-icon name="settings"></ui-icon>
         </button>
@@ -1463,6 +1487,7 @@ const VideoPlayer = {
         <div class="vc-seek-row">
           <span class="vc-time">{{ fmt(currentTime) }}</span>
           <input class="vc-seek" type="range" min="0" :max="displayDuration || 0" step="0.1"
+                 data-tv-step="10"
                  :value="currentTime" :disabled="!displayDuration" :style="seekStyle()"
                  @input="seekInput" @change="seekCommit" aria-label="Seek">
           <span class="vc-time vc-time-dur">{{ fmt(displayDuration) }}</span>
@@ -1478,6 +1503,7 @@ const VideoPlayer = {
             </button>
             <div class="vc-vol">
               <input class="vc-vol-slider" type="range" min="0" max="1" step="0.01"
+                     data-tv-step="0.05"
                      :value="muted ? 0 : playerVolume" :style="volStyle()"
                      @input="onVolSlider" aria-label="Volume">
               <button class="vc-btn" @click="toggleMute" :title="muted ? 'Unmute' : 'Mute'">

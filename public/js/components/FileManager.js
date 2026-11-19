@@ -99,10 +99,12 @@ const FileManager = {
 
   mounted() {
     document.addEventListener('keydown', this.onMenuKey);
+    document.addEventListener('tv-back', this.onTvBack);
   },
 
   unmounted() {
     document.removeEventListener('keydown', this.onMenuKey);
+    document.removeEventListener('tv-back', this.onTvBack);
     if (this.data) {
       this._scrollMem[this.data.path] = window.scrollY;
     }
@@ -207,6 +209,13 @@ const FileManager = {
       if (e.key === 'Escape' && this.menuFor) this.closeMenu();
     },
 
+    /** TV mode Backspace: leaving a folder means going up one level. */
+    onTvBack(e) {
+      if (!this.canGoUp) return;
+      e.preventDefault();
+      this.goUp();
+    },
+
     toggleMenu(item) {
       this.menuFor = this.menuFor === item.path ? null : item.path;
     },
@@ -239,7 +248,7 @@ const FileManager = {
           this.refresh();
         }
       } catch (e) {
-        alert('Delete failed: ' + e.message);
+        alert(`Delete failed: ${e.message}`);
       }
     },
 
@@ -288,6 +297,7 @@ const FileManager = {
           <button class="icon-btn" @click="$router.push({ name: 'tags' })" title="Manage tags">
             <ui-icon name="label"></ui-icon>
           </button>
+          <tv-toggle></tv-toggle>
           <button class="icon-btn" @click="$emit('open-settings')" title="Settings">
             <ui-icon name="settings"></ui-icon>
           </button>

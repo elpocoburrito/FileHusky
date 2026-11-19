@@ -195,6 +195,7 @@ const TagManager = {
           <ui-icon name="arrowBack"></ui-icon>
         </button>
         <h1 class="header-title">Tags</h1>
+        <tv-toggle></tv-toggle>
         <button class="icon-btn" @click="$emit('open-settings')" title="Settings">
           <ui-icon name="settings"></ui-icon>
         </button>

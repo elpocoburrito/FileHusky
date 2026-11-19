@@ -1,6 +1,6 @@
 /* ─── App root: registration, hash router, theme ──────────────────────────── */
 
-/* global Vue, UiIcon, SettingsStore, FileManager, HomePage, VideoPlayer, SettingsPanel, TagManager, TagPanel, ToggleSwitch, CastPanel */
+/* global Vue, UiIcon, SettingsStore, TvMode, FileManager, HomePage, VideoPlayer, SettingsPanel, TagManager, TagPanel, ToggleSwitch, CastPanel */
 
 (function () {
   'use strict';
@@ -110,6 +110,7 @@
   app.use(RouterPlugin);
   app.component('ui-icon', UiIcon);
   app.component('toggle-switch', ToggleSwitch);
+  app.component('tv-toggle', TvMode.TvToggle);
   app.component('file-manager', FileManager);
   app.component('home-page', HomePage);
   app.component('cast-panel', CastPanel);
@@ -119,4 +120,7 @@
   app.component('tag-panel', TagPanel);
 
   app.mount('#app');
+
+  // TV mode restores itself from settings once the DOM exists
+  TvMode.init();
 })();

@@ -48,6 +48,7 @@ const ICONS = {
   stop: 'M6 6h12v12H6z',
   fastRewind: 'M11 18V6l-8.5 6 8.5 6zm.5-6l8.5 6V6l-8.5 6z',
   fastForward: 'M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z',
+  tv: 'M21 3H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h5v2H8v2h8v-2h-2v-2h5c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 14H3V5h18v12z',
 };
 
 /**
