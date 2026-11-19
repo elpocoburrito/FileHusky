@@ -680,3 +680,36 @@ right changed the volume by 5 % and the focus never left.
   at 0 % and 100 %, ← leaves the rocker, and the seek bar's ←/→ behaviour is
   untouched (that scenario already existed). 31 checks in that harness,
   24 in the other, 32 in the jsdom render pass.
+
+## Fix: Up skipped the top of the queue and jumped to the player
+
+With a long “Up next” list, pressing ↑ from the top-most *visible* queue row
+jumped straight to the player's controls instead of walking up to the
+“Preparing video” info card above the queue.
+
+- Cause: the occlusion filter added with the earlier “back to the player” fix
+  (`isCovered()` inside `isVisible()`) excluded every element painted over by
+  the sticky video area. On the player page the queue scrolls *underneath*
+  that sticky area, so every row above the top visible one — and the info card
+  — counted as “covered” and dropped out of the candidate set. The nearest
+  remaining target above was the player's own control bar.
+- Fix: covered elements are candidates again. Instead of skipping them,
+  `applyFocus()` now calls `revealFocus(el)` after `scrollIntoView`: it
+  hit-tests the element's centre with `document.elementFromPoint` and, if
+  something else is on top, scrolls the page until the element clears that
+  overlay — a top overlay (header, sticky player) pushes the element below it,
+  a bottom overlay (fixed bars) pulls it above, at most two passes, and
+  off-screen targets are left to `scrollIntoView`. No component-specific
+  knowledge is involved: the overlay is whatever actually sits on top.
+- Result: ↑ now walks the whole queue row by row, each row scrolled out from
+  under the player, then the info card, and only then the player controls —
+  in both directions, and it also fixes rows hidden under the sticky header
+  while browsing.
+- Verification: the tv.js harness grew a scroll model (element rects shift
+  with `scrollY`, elements marked sticky keep their viewport position) and
+  now asserts 35 things, including: ↑ from the top visible row goes to the row
+  above and NOT to the player, that row is scrolled below the player's bottom
+  edge, further steps keep walking and revealing, after the last queue row
+  comes the info card, and the step after that reaches the player controls.
+  The other harness (24) and the jsdom render pass (32) are unchanged and
+  still green.

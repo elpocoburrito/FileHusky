@@ -63,7 +63,9 @@ segment is transcoded when you reach it.
   only the axis it is drawn along, so nothing traps the arrows: the seek bar
   takes ←/→ (10 s steps) and lets ↑/↓ move on, the volume rocker takes ↑/↓
   (5 % steps) and lets ←/→ move on. A dropdown takes the arrows only after it
-  has been opened. The player gets a
+  has been opened. Long lists stay walkable: a row that is scrolled under a
+  sticky player or header is focused *and* scrolled clear of it instead of
+  being skipped. The player gets a
   play/pause button in its control bar. TV mode also hides everything that
   is not media (folders, videos, images and audio only) and starts on the
   large gallery layout — leaving it restores the list. Gamepads are read

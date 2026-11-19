@@ -92,27 +92,39 @@ const TvMode = (function () {
     // be an invisible focus stop; TV mode gives those a size in CSS instead.
     const r = el.getBoundingClientRect();
     if (r.width < 4 || r.height < 4) return false;
-    return hasPointerEvents(el) && !isCovered(el);
+    return hasPointerEvents(el);
   }
 
   /**
-   * True when another element is painted over the middle of `el`.
+   * Scroll a focused element out from under a sticky/fixed overlay.
    *
-   * The player page keeps its video area sticky, so the queue below scrolls
-   * underneath it: without this test the focus ring could land on a row that
-   * is hidden behind the player and never come back to the visible controls.
-   * Targets outside the viewport are not tested — there is nothing to hit-test
-   * against, and `scrollIntoView` brings them in once they take the focus.
+   * The player page keeps its video area sticky, so the queue below slides
+   * underneath it (the same goes for the sticky header). Such a row is still
+   * a valid target — skipping it is what made Up jump straight to the player
+   * from the top visible row — but the ring must not stay hidden, so after
+   * focusing we nudge the page until the element clears the overlay. The
+   * overlay is whatever element actually sits on top of the target's centre,
+   * so no component-specific knowledge is needed here.
    */
-  function isCovered(el) {
-    if (!document.elementFromPoint) return false;
-    const r = el.getBoundingClientRect();
-    const x = r.left + r.width / 2;
-    const y = r.top + r.height / 2;
-    if (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight) return false;
-    const hit = document.elementFromPoint(x, y);
-    if (!hit) return false;
-    return hit !== el && !el.contains(hit) && !hit.contains(el);
+  function revealFocus(el) {
+    if (!document.elementFromPoint) return;
+    for (let pass = 0; pass < 2; pass++) {
+      const r = el.getBoundingClientRect();
+      const x = r.left + r.width / 2;
+      const y = r.top + r.height / 2;
+      // Outside the viewport: scrollIntoView already took care of it
+      if (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight) return;
+      const hit = document.elementFromPoint(x, y);
+      if (!hit || hit === el || el.contains(hit) || hit.contains(el)) return;
+      const cover = hit.getBoundingClientRect();
+      // Overlay hanging from the top (header, player) → push the element
+      // below it; an overlay at the bottom (bars) → pull it above.
+      const dy = cover.bottom < window.innerHeight
+        ? r.top - cover.bottom - 8
+        : r.top + r.height - cover.top + 8;
+      if (!dy) return;
+      window.scrollBy(0, dy);
+    }
   }
 
   function hasPointerEvents(el) {
@@ -160,6 +172,7 @@ const TvMode = (function () {
     markFocus(el);
     if (scroll !== false) {
       el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      revealFocus(el);
     }
     return el;
   }
