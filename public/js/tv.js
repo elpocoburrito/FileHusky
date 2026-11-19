@@ -319,20 +319,35 @@ const TvMode = (function () {
   /* ═══ Range inputs (seek / volume sliders) ═════════════════════════════ */
 
   /**
-   * A slider is the one control where ←/→ mean "adjust", not "move": the
-   * horizontal axis is the value, while ↑/↓ leave the slider (otherwise focus
-   * would be trapped on it — a remote has no Tab key). The step comes from
-   * `data-tv-step` (seek = 10 s, volume = 5 %) so a press moves a useful
-   * amount; `input` + `change` replay what a real drag does, keeping the
-   * component's preview/commit handlers intact.
+   * A slider consumes the axis it is *drawn* along and leaves the other one
+   * for navigation, so a remote is never trapped on it (there is no Tab key):
+   *
+   *   data-tv-axis="x" (default)  ←/→ change the value, ↑/↓ move on  (seek bar)
+   *   data-tv-axis="y"            ↑/↓ change the value, ←/→ move on  (volume)
+   *
+   * The volume rocker sits *between* buttons in the control bar, so on the x
+   * axis it used to swallow every ←/→ and the bar could not be crossed. The
+   * step comes from `data-tv-step` (seek = 10 s, volume = 5 %); `input` +
+   * `change` replay what a real drag does, keeping the component's
+   * preview/commit handlers intact.
    */
+  function rangeAxis(el) {
+    return (el.getAttribute('data-tv-axis') || 'x').toLowerCase() === 'y' ? 'y' : 'x';
+  }
+
+  /** True when this arrow key belongs to the slider instead of the navigation. */
+  function rangeOwnsKey(el, dir) {
+    const horizontal = dir === 'left' || dir === 'right';
+    return rangeAxis(el) === 'y' ? !horizontal : horizontal;
+  }
+
   function stepRange(el, dir) {
     const min = parseFloat(el.min);
     const max = parseFloat(el.max);
     if (!isFinite(min) || !isFinite(max)) return;
     const rawStep = parseFloat(el.getAttribute('data-tv-step'));
     const step = isFinite(rawStep) && rawStep > 0 ? rawStep : Math.max((max - min) / 50, 0.01);
-    const plus = dir === 'right';
+    const plus = dir === 'right' || dir === 'up';
     let value = (parseFloat(el.value) || 0) + (plus ? step : -step);
     value = Math.min(max, Math.max(min, Math.round(value * 1000) / 1000));
     el.value = String(value);
@@ -474,13 +489,12 @@ const TvMode = (function () {
     return false;
   }
 
-  /** ←/→ adjust a slider, ↑/↓ leave it; everything else moves the focus. */
+  /** A slider owns the axis it is drawn along; every other arrow moves focus. */
   function handleDirection(e, active, dir) {
     const isRange = !!active && active.tagName === 'INPUT' && active.type === 'range';
-    if (isRange && (dir === 'left' || dir === 'right')) {
-      consume(e); stepRange(active, dir); return;
-    }
-    consume(e); moveFocus(dir);
+    consume(e);
+    if (isRange && rangeOwnsKey(active, dir)) stepRange(active, dir);
+    else moveFocus(dir);
   }
 
   function onKeyDown(e) {

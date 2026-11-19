@@ -654,3 +654,29 @@ viewed, and the gallery's ⋮ button kept stealing the TV focus.
   24 + 23 checks (activation on release, long press fires `contextmenu`,
   release after a long press does not activate, fallback activation when an
   element has no menu, selects still arm/disarm).
+
+## Fix: the volume rocker swallowed ←/→ in the player
+
+Moving along the player's control bar with a remote got stuck on the volume
+slider: it sits *between* buttons (next → rocker → mute → quality…), and every
+range input took ←/→ as "adjust" — so once the focus landed there, pressing
+right changed the volume by 5 % and the focus never left.
+
+- Sliders now own **only the axis they are drawn along**, declared with
+  `data-tv-axis` (`x` by default, `y` for the volume rocker):
+  - `x` → ←/→ change the value, ↑/↓ move on (the seek bar, unchanged)
+  - `y` → ↑/↓ change the value, ←/→ move on (the volume rocker)
+  `handleDirection()` asks `rangeOwnsKey()` instead of hard-coding the
+  horizontal case; `stepRange()` accepts `up` as "+" for the vertical slider,
+  so the mirror of the old behaviour is exact.
+- `VideoPlayer` marks the slider `data-tv-axis="y"` (plus a `title` that says
+  so). `onVolSlider` already raises the volume HUD on every change, so the
+  level is visible while ↑/↓ are used — no extra focus-side code needed.
+- Nothing else changes: the seek bar still steps 10 s with ←/→ and still lets
+  ↑/↓ go, and both sliders keep their `data-tv-step`.
+- Verified in the tv.js harness with a control bar (prev / play / next /
+  rocker / mute): → lands on the rocker, a second → moves on **without**
+  changing the value, ↑/↓ change it while keeping the focus, the value clamps
+  at 0 % and 100 %, ← leaves the rocker, and the seek bar's ←/→ behaviour is
+  untouched (that scenario already existed). 31 checks in that harness,
+  24 in the other, 32 in the jsdom render pass.

@@ -1514,10 +1514,12 @@ const VideoPlayer = {
               <ui-icon name="skipNext" :size="26"></ui-icon>
             </button>
             <div class="vc-vol">
+              <!-- data-tv-axis="y": in TV mode ↑/↓ change the volume and ←/→
+                   keep moving along the control bar instead of snagging here -->
               <input class="vc-vol-slider" type="range" min="0" max="1" step="0.01"
-                     data-tv-step="0.05"
+                     data-tv-step="0.05" data-tv-axis="y"
                      :value="muted ? 0 : playerVolume" :style="volStyle()"
-                     @input="onVolSlider" aria-label="Volume">
+                     @input="onVolSlider" aria-label="Volume" title="Volume (↑/↓)">
               <button class="vc-btn" @click="toggleMute" :title="muted ? 'Unmute' : 'Mute'">
                 <ui-icon :name="muted ? 'volumeOff' : 'volumeUp'" :size="26"></ui-icon>
               </button>

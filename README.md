@@ -59,9 +59,11 @@ segment is transcoded when you reach it.
   header: ←/→/↑/↓ move the focus between buttons, rows and controls, Enter
   or Space activates (on release), Backspace closes the open menu/dialog,
   leaves fullscreen, goes up a folder or goes back. **Holding** Enter/Space
-  (or A on a controller) opens the focused item's actions menu. On a focused
-  slider ←/→ step the value (seek 10 s, volume 5 %) while ↑/↓ leave it; a
-  dropdown only takes the arrows after it has been opened. The player gets a
+  (or A on a controller) opens the focused item's actions menu. A slider owns
+  only the axis it is drawn along, so nothing traps the arrows: the seek bar
+  takes ←/→ (10 s steps) and lets ↑/↓ move on, the volume rocker takes ↑/↓
+  (5 % steps) and lets ←/→ move on. A dropdown takes the arrows only after it
+  has been opened. The player gets a
   play/pause button in its control bar. TV mode also hides everything that
   is not media (folders, videos, images and audio only) and starts on the
   large gallery layout — leaving it restores the list. Gamepads are read
