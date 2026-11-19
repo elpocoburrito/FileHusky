@@ -332,12 +332,21 @@ const IMAGE_EXT = new Set([
   '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg', '.ico', '.tiff', '.tif'
 ]);
 
+const AUDIO_EXT = new Set([
+  '.mp3', '.flac', '.aac', '.ogg', '.oga', '.opus', '.m4a', '.wav', '.wma',
+  '.aiff', '.aif', '.alac', '.ape', '.wv', '.dsf', '.dff', '.m4b', '.mka'
+]);
+
 function isVideo(file) {
   return VIDEO_EXT.has(path.extname(file).toLowerCase());
 }
 
 function isImage(file) {
   return IMAGE_EXT.has(path.extname(file).toLowerCase());
+}
+
+function isAudio(file) {
+  return AUDIO_EXT.has(path.extname(file).toLowerCase());
 }
 
 function formatSize(bytes) {
@@ -771,6 +780,7 @@ app.get('/api/browse', (req, res) => {
         isDirectory: dirent.isDirectory(),
         isVideo: isVideo(dirent.name),
         isImage: isImage(dirent.name),
+        isAudio: isAudio(dirent.name),
         size: stat.size,
         sizeFormatted: formatSize(stat.size),
         mtime: stat.mtime
@@ -925,6 +935,104 @@ app.get('/api/video/raw', (req, res) => {
   // sendFile supports HTTP Range requests, so external players / browsers can seek
   res.sendFile(sp, (err) => {
     if (err && !res.headersSent) res.status(500).json({ error: err.message });
+  });
+});
+
+// ─── Thumbnails (gallery views) ──────────────────────────────────────────
+// One JPEG per (file, mtime, size), generated with ffmpeg and cached in the
+// temp cache dir next to the transcode segments. ffmpeg is expensive, so
+// misses are queued with a small concurrency limit and identical requests
+// are coalesced; the client renders a plain icon when a file has no thumb.
+const THUMB_DIR = path.join(CACHE_DIR, 'thumbs');
+const THUMB_WIDTH = 480;
+const THUMB_CONCURRENCY = 2;
+if (!fs.existsSync(THUMB_DIR)) fs.mkdirSync(THUMB_DIR, { recursive: true });
+
+let thumbRunning = 0;
+const thumbWaiting = [];
+const thumbJobs = new Map();
+
+/** Run `fn` with at most THUMB_CONCURRENCY ffmpeg processes at a time. */
+function withThumbSlot(fn) {
+  return new Promise((resolve) => {
+    const run = () => {
+      thumbRunning++;
+      fn().then(resolve, () => resolve(null)).finally(() => {
+        thumbRunning--;
+        const next = thumbWaiting.shift();
+        if (next) next();
+      });
+    };
+    if (thumbRunning < THUMB_CONCURRENCY) run();
+    else thumbWaiting.push(run);
+  });
+}
+
+/** Generate `<out>` from `file` with ffmpeg; resolves to null on failure. */
+function runFfmpegThumb(file, out, seek) {
+  return new Promise((resolve) => {
+    const args = [];
+    if (seek) args.push('-ss', String(seek));
+    args.push(
+      '-v', 'error',
+      '-i', file,
+      '-frames:v', '1',
+      // Never upscale; keep the aspect ratio (cards crop with object-fit)
+      '-vf', `scale='min(${THUMB_WIDTH},iw)':-2`,
+      '-q:v', '6',
+      '-y', out
+    );
+    const proc = spawn(FFMPEG, args);
+    const timer = setTimeout(() => proc.kill('SIGKILL'), 20000);
+    proc.on('error', () => { clearTimeout(timer); resolve(null); });
+    proc.on('close', (code) => {
+      clearTimeout(timer);
+      resolve(code === 0 && fs.existsSync(out) ? out : null);
+    });
+  });
+}
+
+async function makeThumb(sp, key, wantsSeek) {
+  const out = path.join(THUMB_DIR, key + '.jpg');
+  if (fs.existsSync(out)) return out;
+  const tmp = out + '.' + process.pid + '.tmp.jpg';
+  // A frame a little into the video beats a black first frame; very short
+  // clips fall back to frame 0.
+  let made = wantsSeek ? await runFfmpegThumb(sp, tmp, 2) : await runFfmpegThumb(sp, tmp, 0);
+  if (!made && wantsSeek) made = await runFfmpegThumb(sp, tmp, 0);
+  if (!made) {
+    try { fs.unlinkSync(tmp); } catch {}
+    return null;
+  }
+  try { fs.renameSync(tmp, out); } catch { try { fs.unlinkSync(tmp); } catch {} }
+  return fs.existsSync(out) ? out : null;
+}
+
+app.get('/api/thumb', async (req, res) => {
+  const sp = safePath(req.query.path);
+  if (!sp) return res.status(400).json({ error: 'Invalid path' });
+  if (!FFMPEG) return res.status(500).json({ error: 'ffmpeg not found' });
+  let stat;
+  try { stat = fs.statSync(sp); } catch { return res.status(404).json({ error: 'Not found' }); }
+  if (!stat.isFile()) return res.status(400).json({ error: 'Not a file' });
+
+  const wantsSeek = isVideo(sp);
+  const key = crypto.createHash('sha1')
+    .update(`${sp}|${stat.mtimeMs}|${stat.size}|${THUMB_WIDTH}`)
+    .digest('hex');
+
+  let job = thumbJobs.get(key);
+  if (!job) {
+    job = withThumbSlot(() => makeThumb(sp, key, wantsSeek));
+    thumbJobs.set(key, job);
+    job.finally(() => thumbJobs.delete(key));
+  }
+  const file = await job;
+  if (!file) return res.status(404).json({ error: 'No thumbnail' });
+  // The cache key contains the mtime, so the URL can be cached forever.
+  res.setHeader('Cache-Control', 'public, max-age=604800');
+  res.sendFile(file, (err) => {
+    if (err && !res.headersSent) res.status(404).end();
   });
 });
 
