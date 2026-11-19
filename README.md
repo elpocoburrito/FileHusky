@@ -11,9 +11,10 @@ segment is transcoded when you reach it.
 - **Three display modes** for every folder — the compact list, a **gallery**
   of 16:9 thumbnails and a **large gallery** — switched with the toolbar
   button (list → gallery → large → list) or in Settings. Thumbnails are
-  rendered with ffmpeg on first view and cached in the temp dir, so a
-  folder only pays that cost once; files without a preview (audio, text)
-  fall back to their type icon
+  rendered live by ffmpeg and held **in memory only** (nothing is written to
+  disk); files without a preview (audio, text) fall back to their type icon.
+  Gallery tiles have no ⋮ button — a long press (or right click, or a held
+  select on a remote/controller) opens their cast/download/delete menu
 - On-demand HLS transcoding — start watching instantly, seek anywhere
 - Hardware-accelerated transcoding when available (NVIDIA NVENC/NVDEC,
   Intel QSV, AMD AMF, VAAPI), automatic fallback to software
@@ -56,15 +57,16 @@ segment is transcoded when you reach it.
 - **TV mode** — pointer-free navigation for Bluetooth remotes, game
   controllers and keyboard-only setups. Toggle it with the TV icon in the
   header: ←/→/↑/↓ move the focus between buttons, rows and controls, Enter
-  or Space activates, Backspace closes the open menu/dialog, leaves
-  fullscreen, goes up a folder or goes back. On a focused slider ←/→ step
-  the value (seek 10 s, volume 5 %) while ↑/↓ leave it; a dropdown only
-  takes the arrows after it has been opened. The player gets a play/pause
-  button in its control bar. TV mode also hides everything that is not
-  media (folders, videos, images and audio only) and starts on the large
-  gallery layout — leaving it restores the list. Gamepads are read through
-  the Gamepad API (D-pad, left stick, A = select, B = back); the mode is
-  remembered per browser
+  or Space activates (on release), Backspace closes the open menu/dialog,
+  leaves fullscreen, goes up a folder or goes back. **Holding** Enter/Space
+  (or A on a controller) opens the focused item's actions menu. On a focused
+  slider ←/→ step the value (seek 10 s, volume 5 %) while ↑/↓ leave it; a
+  dropdown only takes the arrows after it has been opened. The player gets a
+  play/pause button in its control bar. TV mode also hides everything that
+  is not media (folders, videos, images and audio only) and starts on the
+  large gallery layout — leaving it restores the list. Gamepads are read
+  through the Gamepad API (D-pad, left stick, A = select, B = back); the
+  mode is remembered per browser
 - Dark / light themes, search and sorting
 
 ## Run directly (Node.js)
@@ -146,11 +148,12 @@ first use). In Docker it is persisted via the `srvfiles-data` volume.
   carries `isDirectory` / `isVideo` / `isImage` / `isAudio` flags so the
   client can filter without knowing the extension lists
 - `GET /api/thumb?path=/some/file.mp4` — a 480 px-wide JPEG preview
-  (a frame ~2 s in for videos, the scaled image for pictures). Generated
-  with ffmpeg on first request, cached in the OS temp dir keyed by
-  path + mtime + size, at most two ffmpeg runs at a time. Responds 404
-  when a file has no still frame (audio, text, …) so the UI can fall back
-  to an icon
+  (a frame ~2 s in for videos, the scaled image for pictures), rendered
+  live by ffmpeg and kept **in memory only** (never written to disk; the
+  process keeps up to 64 MB, oldest entry evicted first, and answers
+  `Cache-Control: no-store`). Renders are capped at two at a time and
+  identical requests share one. Responds 404 when a file has no still
+  frame (audio, text, …) so the UI can fall back to an icon
 
 ## API (casting to a Castor receiver)
 

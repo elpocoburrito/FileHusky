@@ -939,18 +939,41 @@ app.get('/api/video/raw', (req, res) => {
 });
 
 // ─── Thumbnails (gallery views) ──────────────────────────────────────────
-// One JPEG per (file, mtime, size), generated with ffmpeg and cached in the
-// temp cache dir next to the transcode segments. ffmpeg is expensive, so
-// misses are queued with a small concurrency limit and identical requests
-// are coalesced; the client renders a plain icon when a file has no thumb.
-const THUMB_DIR = path.join(CACHE_DIR, 'thumbs');
+// Rendered live with ffmpeg and kept **in memory only** (never written to
+// disk): a folder view re-renders its tiles after a restart, and nothing goes
+// stale when a file is replaced. ffmpeg is expensive, so renders are capped at
+// THUMB_CONCURRENCY at a time and identical requests share one render.
 const THUMB_WIDTH = 480;
 const THUMB_CONCURRENCY = 2;
-if (!fs.existsSync(THUMB_DIR)) fs.mkdirSync(THUMB_DIR, { recursive: true });
+const THUMB_MEM_LIMIT = 64 * 1024 * 1024; // 64 MB of JPEGs, oldest evicted first
 
 let thumbRunning = 0;
 const thumbWaiting = [];
 const thumbJobs = new Map();
+const thumbMemory = new Map();   // cache key -> Buffer (Map keeps insertion order)
+let thumbMemBytes = 0;
+
+function thumbCacheGet(key) {
+  const buf = thumbMemory.get(key);
+  if (!buf) return null;
+  // Re-insert so the newest reads sit at the end and are evicted last
+  thumbMemory.delete(key);
+  thumbMemory.set(key, buf);
+  return buf;
+}
+
+function thumbCachePut(key, buf) {
+  if (buf.length > THUMB_MEM_LIMIT / 4) return; // one tile never owns the budget
+  if (thumbMemory.has(key)) thumbMemBytes -= thumbMemory.get(key).length;
+  thumbMemory.set(key, buf);
+  thumbMemBytes += buf.length;
+  while (thumbMemBytes > THUMB_MEM_LIMIT) {
+    const oldest = thumbMemory.keys().next();
+    if (oldest.done) break;
+    thumbMemBytes -= thumbMemory.get(oldest.value).length;
+    thumbMemory.delete(oldest.value);
+  }
+}
 
 /** Run `fn` with at most THUMB_CONCURRENCY ffmpeg processes at a time. */
 function withThumbSlot(fn) {
@@ -968,8 +991,8 @@ function withThumbSlot(fn) {
   });
 }
 
-/** Generate `<out>` from `file` with ffmpeg; resolves to null on failure. */
-function runFfmpegThumb(file, out, seek) {
+/** Render one JPEG frame of `file` into memory; resolves to null on failure. */
+function renderThumbBuffer(file, seek) {
   return new Promise((resolve) => {
     const args = [];
     if (seek) args.push('-ss', String(seek));
@@ -980,32 +1003,36 @@ function runFfmpegThumb(file, out, seek) {
       // Never upscale; keep the aspect ratio (cards crop with object-fit)
       '-vf', `scale='min(${THUMB_WIDTH},iw)':-2`,
       '-q:v', '6',
-      '-y', out
+      '-f', 'image2pipe',
+      '-vcodec', 'mjpeg',
+      'pipe:1'
     );
     const proc = spawn(FFMPEG, args);
+    const chunks = [];
+    let bytes = 0;
     const timer = setTimeout(() => proc.kill('SIGKILL'), 20000);
+    proc.stdout.on('data', (chunk) => {
+      bytes += chunk.length;
+      if (bytes > 8 * 1024 * 1024) { proc.kill('SIGKILL'); return; }
+      chunks.push(chunk);
+    });
     proc.on('error', () => { clearTimeout(timer); resolve(null); });
     proc.on('close', (code) => {
       clearTimeout(timer);
-      resolve(code === 0 && fs.existsSync(out) ? out : null);
+      resolve(code === 0 && chunks.length ? Buffer.concat(chunks) : null);
     });
   });
 }
 
 async function makeThumb(sp, key, wantsSeek) {
-  const out = path.join(THUMB_DIR, key + '.jpg');
-  if (fs.existsSync(out)) return out;
-  const tmp = out + '.' + process.pid + '.tmp.jpg';
+  const cached = thumbCacheGet(key);
+  if (cached) return cached;
   // A frame a little into the video beats a black first frame; very short
   // clips fall back to frame 0.
-  let made = wantsSeek ? await runFfmpegThumb(sp, tmp, 2) : await runFfmpegThumb(sp, tmp, 0);
-  if (!made && wantsSeek) made = await runFfmpegThumb(sp, tmp, 0);
-  if (!made) {
-    try { fs.unlinkSync(tmp); } catch {}
-    return null;
-  }
-  try { fs.renameSync(tmp, out); } catch { try { fs.unlinkSync(tmp); } catch {} }
-  return fs.existsSync(out) ? out : null;
+  let buf = wantsSeek ? await renderThumbBuffer(sp, 2) : await renderThumbBuffer(sp, 0);
+  if (!buf && wantsSeek) buf = await renderThumbBuffer(sp, 0);
+  if (buf) thumbCachePut(key, buf);
+  return buf;
 }
 
 app.get('/api/thumb', async (req, res) => {
@@ -1016,24 +1043,21 @@ app.get('/api/thumb', async (req, res) => {
   try { stat = fs.statSync(sp); } catch { return res.status(404).json({ error: 'Not found' }); }
   if (!stat.isFile()) return res.status(400).json({ error: 'Not a file' });
 
-  const wantsSeek = isVideo(sp);
-  const key = crypto.createHash('sha1')
-    .update(`${sp}|${stat.mtimeMs}|${stat.size}|${THUMB_WIDTH}`)
-    .digest('hex');
+  // Key on path + mtime + size, so a replaced file gets a fresh render
+  const key = `${sp}|${stat.mtimeMs}|${stat.size}`;
 
   let job = thumbJobs.get(key);
   if (!job) {
-    job = withThumbSlot(() => makeThumb(sp, key, wantsSeek));
+    job = withThumbSlot(() => makeThumb(sp, key, isVideo(sp)));
     thumbJobs.set(key, job);
     job.finally(() => thumbJobs.delete(key));
   }
-  const file = await job;
-  if (!file) return res.status(404).json({ error: 'No thumbnail' });
-  // The cache key contains the mtime, so the URL can be cached forever.
-  res.setHeader('Cache-Control', 'public, max-age=604800');
-  res.sendFile(file, (err) => {
-    if (err && !res.headersSent) res.status(404).end();
-  });
+  const buf = await job;
+  if (!buf) return res.status(404).json({ error: 'No thumbnail' });
+  // Memory-only: tell the browser not to keep its own copy either
+  res.setHeader('Content-Type', 'image/jpeg');
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(buf);
 });
 
 app.get('/api/video/metadata', async (req, res) => {

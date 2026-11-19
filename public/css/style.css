@@ -448,6 +448,10 @@ button {
   border: 1px solid var(--outline);
   overflow: hidden;
   text-align: left;
+  /* Long press opens the actions menu instead of selecting the tile */
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
   transition: transform 0.1s, background 0.15s, border-color 0.15s;
 }
 .gallery-card:hover { background: var(--surface-2); border-color: var(--surface-3); }
@@ -1864,13 +1868,6 @@ button {
 
 .row-menu-btn:hover { background: var(--surface-3); color: var(--text); }
 
-/* Gallery: ⋮ button pinned to the card's top-right corner */
-.row-menu-btn.grid {
-  top: 8px;
-  right: 6px;
-  transform: none;
-  background: var(--surface-2);
-}
 
 .row-menu-backdrop { position: fixed; inset: 0; z-index: 60; }
 
@@ -1889,8 +1886,9 @@ button {
   flex-direction: column;
 }
 
-/* Gallery: menu drops from the corner button */
-.gallery-cell .row-menu { top: 46px; right: 4px; }
+/* Gallery has no ⋮ button (long press / right click opens the menu), so the
+   menu sits in the card's own top-right corner. */
+.gallery-cell .row-menu { top: 8px; right: 8px; }
 
 .row-menu-item {
   display: flex;

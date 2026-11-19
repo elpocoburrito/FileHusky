@@ -237,18 +237,47 @@ const FileManager = {
       return 'is-file';
     },
 
-    // ── Gallery thumbnails (server-rendered and cached) ───────────────
+    // ── Gallery thumbnails (rendered live by the server, memory only) ──
     hasThumb(item) {
       return (item.isVideo || item.isImage) && !this.noThumb[item.path];
     },
 
     thumbUrl(item) {
-      const v = new Date(item.mtime).getTime();
-      return `/api/thumb?path=${encodeURIComponent(item.path)}&v=${v}`;
+      return `/api/thumb?path=${encodeURIComponent(item.path)}`;
     },
 
     onThumbError(item) {
       this.noThumb[item.path] = true;
+    },
+
+    // ── Gallery item actions (no ⋮ button: long press / right click) ──
+    /** Open the actions menu for an item (idempotent: used by both paths). */
+    openItemMenu(item) {
+      this.menuFor = item.path;
+    },
+
+    /**
+     * Touch has no right click: hold a card (or a remote's select key, which
+     * dispatches `contextmenu` through tv.js) to open its actions.
+     */
+    onCardPointerDown(item, e) {
+      if (e.pointerType === 'mouse') return; // right click already does it
+      clearTimeout(this._lpTimer);
+      this._lpFired = false;
+      this._lpTimer = setTimeout(() => {
+        this._lpFired = true;
+        this.openItemMenu(item);
+      }, 550);
+    },
+
+    onCardPointerUp() {
+      clearTimeout(this._lpTimer);
+    },
+
+    /** Swallow the click that follows a long press (it opened the menu). */
+    onCardClick(item) {
+      if (this._lpFired) { this._lpFired = false; return; }
+      this.openItem(item);
     },
 
     /** list → small gallery → large gallery → list */
@@ -482,7 +511,14 @@ const FileManager = {
       <!-- ── Gallery: small (gallery) or large (gallery-lg) thumbnails ── -->
       <div v-else class="gallery-grid" :class="{ 'gallery-lg': s.viewMode === 'gallery-lg' }">
         <div v-for="item in visibleItems" :key="item.path" class="gallery-cell">
-          <button class="gallery-card" @click="openItem(item)">
+          <!-- No ⋮ button here: it sat between the rows and caught the focus
+               on every move. Actions open on long press or right click, and
+               tv.js dispatches a contextmenu event for a held select key. -->
+          <button class="gallery-card" @click="onCardClick(item)"
+                  @contextmenu.prevent="openItemMenu(item)"
+                  @pointerdown="onCardPointerDown(item, $event)"
+                  @pointerup="onCardPointerUp"
+                  @pointercancel="onCardPointerUp">
             <span class="gallery-thumb" :class="itemClass(item)">
               <img v-if="hasThumb(item)" class="thumb-img" :src="thumbUrl(item)"
                    loading="lazy" decoding="async" alt="" @error="onThumbError(item)">
@@ -497,12 +533,8 @@ const FileManager = {
             </span>
           </button>
 
-          <!-- Row context menu (⋮): folder actions / video cast -->
+          <!-- Actions menu: opened by long press / right click -->
           <template v-if="item.isDirectory || item.isVideo">
-            <button class="row-menu-btn grid" @click.stop="toggleMenu(item)"
-                    :title="item.isDirectory ? 'Folder actions' : 'Video actions'" :aria-label="item.isDirectory ? 'Folder actions' : 'Video actions'">
-              <ui-icon name="moreVert" :size="18"></ui-icon>
-            </button>
             <div v-if="menuFor === item.path" class="row-menu">
               <button v-if="item.isDirectory" class="row-menu-item" @click="downloadZip(item)">
                 <ui-icon name="download" :size="18"></ui-icon>

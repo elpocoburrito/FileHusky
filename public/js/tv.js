@@ -64,6 +64,13 @@ const TvMode = (function () {
   let synthetic = false;   // guards re-entrancy of our own dispatched events
   let armedSelect = null;  // <select> that took the arrow keys (see armSelect)
   const padHeld = new Map();
+  let pressTimer = null;   // pending activate-key press (long-press detection)
+  let pressFired = false;  // that press already opened a context menu
+  let padBackHeld = false; // B is edge-triggered (no repeat)
+  const padPress = { active: false, fired: false, timer: null };
+
+  /** Hold an activate key/button this long to open the item's menu. */
+  const LONG_PRESS_MS = 600;
 
   /* ═══ Visibility ═══════════════════════════════════════════════════════ */
 
@@ -408,6 +415,56 @@ const TvMode = (function () {
     return key === 'Enter' || key === ' ' || key === 'Spacebar' || key === 'Select';
   }
 
+  /* ═══ Activation vs. long press ═══════════════════════════════════════ */
+
+  /**
+   * A press activates on **release**, which frees the press itself for a long
+   * press: holding select (or Space/Enter) opens the item's context menu —
+   * that is how the gallery reaches “cast / download / delete” now that its
+   * ⋮ button is gone. Elements without a `contextmenu` handler fall back to a
+   * normal activation, so holding a player button still works.
+   */
+  function startPress(e) {
+    consume(e);
+    if (e.repeat) return;                 // auto-repeat is not a new press
+    clearPress();
+    pressFired = false;
+    pressTimer = setTimeout(() => {
+      pressTimer = null;
+      pressFired = true;
+      openContextMenu();
+    }, LONG_PRESS_MS);
+  }
+
+  function endPress() {
+    if (pressTimer) {                     // short press: activate now
+      clearTimeout(pressTimer);
+      pressTimer = null;
+      activate();
+      return;
+    }
+    pressFired = false;                   // long press already did its thing
+  }
+
+  function clearPress() {
+    if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+  }
+
+  /**
+   * Ask the focused element for its actions menu. Components opt in with
+   * `@contextmenu.prevent`; a synthetic event never opens the browser menu.
+   * Without a handler this is just an activation, so a held key on a plain
+   * button behaves like a press.
+   */
+  function openContextMenu() {
+    const el = ensureFocus();
+    if (!el || el === document.body) return;
+    const ev = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+    el.dispatchEvent(ev);
+    if (ev.defaultPrevented) afterActivate();
+    else activate();
+  }
+
   /** An armed <select> owns ↑/↓ until it is closed again. */
   function handleArmedSelect(e, key, dir) {
     if (!armedSelect || document.activeElement !== armedSelect) return false;
@@ -443,8 +500,16 @@ const TvMode = (function () {
     const dir = DIRS[key];
     if (handleArmedSelect(e, key, dir)) return;
     if (dir) { handleDirection(e, active, dir); return; }
-    if (isActivateKey(key)) { consume(e); activate(); return; }
+    if (isActivateKey(key)) { startPress(e); return; }
     if (BACK_KEYS.indexOf(key) !== -1) { consume(e); goBack(); }
+  }
+
+  /** Release of an activate key: short press activates, long press opened a menu. */
+  function onKeyUp(e) {
+    if (!state.enabled) return;
+    if (!isActivateKey(e.key)) return;
+    if (!pressTimer && !pressFired) return;   // a keyup we never started
+    endPress();
   }
 
   function onFocusIn(e) {
@@ -458,16 +523,35 @@ const TvMode = (function () {
 
   /* ═══ Gamepad (controllers; D-pad + left stick) ════════════════════════ */
 
-  function padAction(action) {
-    if (action === 'select') activate();
-    else if (action === 'back') goBack();
-    else moveFocus(action);
+  /** A = select (press/hold on the same long-press rule), B = back. */
+  function padSelect(held) {
+    if (held && !padPress.active) {
+      padPress.active = true;
+      clearTimeout(padPress.timer);
+      padPress.timer = setTimeout(() => {
+        padPress.timer = null;
+        padPress.fired = true;
+        openContextMenu();
+      }, LONG_PRESS_MS);
+      return;
+    }
+    if (!held && padPress.active) {
+      padPress.active = false;
+      if (padPress.timer) {          // released early: a normal select
+        clearTimeout(padPress.timer);
+        padPress.timer = null;
+        activate();
+      }
+      padPress.fired = false;
+    }
   }
 
   function pollGamepads() {
     if (!state.enabled) { padRaf = null; return; }
     const pads = navigator.getGamepads ? navigator.getGamepads() : [];
     const active = new Set();
+    let selectHeld = false;
+    let backHeld = false;
 
     for (const pad of pads) {
       if (!pad) continue;
@@ -475,6 +559,8 @@ const TvMode = (function () {
         const btn = pad.buttons[index];
         if (btn && btn.pressed) active.add(GAMEPAD_ACTIONS[index]);
       }
+      if (pad.buttons[0] && pad.buttons[0].pressed) selectHeld = true;
+      if (pad.buttons[1] && pad.buttons[1].pressed) backHeld = true;
       const ax = pad.axes[0] || 0;
       const ay = pad.axes[1] || 0;
       // 0.6 deadzone: sticks rest well below it, but a firm push registers fast
@@ -484,20 +570,26 @@ const TvMode = (function () {
       else if (ay > 0.6) active.add('down');
     }
 
+    // Directions repeat while held; select/back are edge-triggered only, so a
+    // held A cannot machine-gun activations (it becomes a long press instead).
     const now = performance.now();
     for (const action of active) {
       const held = padHeld.get(action);
       if (!held) {
         padHeld.set(action, { since: now, last: now });
-        padAction(action);
+        moveFocus(action);
       } else if (now - held.since > 350 && now - held.last > 140) {
         held.last = now;
-        padAction(action);
+        moveFocus(action);
       }
     }
     for (const action of Array.from(padHeld.keys())) {
       if (!active.has(action)) padHeld.delete(action);
     }
+
+    padSelect(selectHeld);
+    if (backHeld && !padBackHeld) goBack();
+    padBackHeld = backHeld;
 
     padRaf = requestAnimationFrame(pollGamepads);
   }
@@ -510,6 +602,11 @@ const TvMode = (function () {
     if (padRaf) cancelAnimationFrame(padRaf);
     padRaf = null;
     padHeld.clear();
+    clearTimeout(padPress.timer);
+    padPress.timer = null;
+    padPress.active = false;
+    padPress.fired = false;
+    padBackHeld = false;
   }
 
   /* ═══ Hint toast ═══════════════════════════════════════════════════════ */
@@ -534,6 +631,7 @@ const TvMode = (function () {
       // TV mode is a 10-foot UI: start on the large gallery layout
       SettingsStore.settings.viewMode = 'gallery-lg';
       document.addEventListener('keydown', onKeyDown, true);
+      document.addEventListener('keyup', onKeyUp, true);
       document.addEventListener('focusin', onFocusIn, true);
       document.addEventListener('focusout', onFocusOut, true);
       startGamepadLoop();
@@ -544,7 +642,9 @@ const TvMode = (function () {
     // Back to the desktop default
     SettingsStore.settings.viewMode = 'list';
     document.removeEventListener('keydown', onKeyDown, true);
+    document.removeEventListener('keyup', onKeyUp, true);
     document.removeEventListener('focusin', onFocusIn, true);
+    clearPress();
     document.removeEventListener('focusout', onFocusOut, true);
     stopGamepadLoop();
     disarmSelect();

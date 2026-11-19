@@ -604,3 +604,53 @@ background) instead of the browser.
 - Lesson recorded: a template that calls a method is not safe to ship on
   `node --check` + linter alone; the jsdom render pass catches missing
   members, wrong icons and broken `v-if` chains in one shot.
+
+## 2026-11-14 — Live thumbnails (memory only) + long-press gallery actions
+
+Two follow-ups: thumbnails should be rendered live for the folder being
+viewed, and the gallery's ⋮ button kept stealing the TV focus.
+
+- **Thumbnails: no disk cache.** `/api/thumb` now renders with ffmpeg into a
+  buffer (`-f image2pipe -vcodec mjpeg pipe:1`) and keeps it in a **memory**
+  map keyed by `path|mtimeMs|size` — nothing is written to disk, so a
+  replaced file can never show a stale frame and the cache dir stays clean
+  (verified: the old `srvfiles-cache/thumbs` directory is not recreated).
+  The map is capped at 64 MB (oldest entry evicted first, one tile may never
+  own more than a quarter of it) and reads re-insert the key so recently used
+  tiles are evicted last. Responses are `Cache-Control: no-store` so the
+  browser does not keep its own copy either; renders are still capped at two
+  concurrent ffmpeg runs and identical in-flight requests share one job.
+  The client URL dropped its `&v=<mtime>` cache-buster.
+- **Gallery has no ⋮ button.** It sat at the card's top-right corner, which
+  is between the rows in the grid, so every vertical move landed on it.
+  Actions now come from the item itself:
+  - tv.js opens the menu on a **long press** of Enter/Space (or a held **A**
+    on a controller): it dispatches a `contextmenu` event on the focused
+    element and the component opts in with `@contextmenu.prevent`; when no
+    handler ran (`defaultPrevented === false`) it falls back to a normal
+    activation, so holding a player button still works.
+  - Activation therefore moved from **keydown to keyup** (`startPress` /
+    `endPress` / `onKeyUp`, 600 ms `LONG_PRESS_MS`): a short press activates
+    on release, a held one opens the menu and suppresses the release.
+  - Gamepad A uses the same press/hold model (`padSelect`, `padPress`) and is
+    no longer machine-gunned by the direction repeat loop; B is
+    edge-triggered (`padBackHeld`).
+  - Mouse right-click and touch long press work without any JS on desktop
+    (native `contextmenu`); for iOS, where long press does not raise one,
+    `onCardPointerDown` starts a 550 ms timer and the trailing click is
+    swallowed by `onCardClick` (`_lpFired`). `.gallery-card` gets
+    `-webkit-touch-callout: none` so the callout does not fight the menu.
+  - List rows keep their ⋮ button (it is on the row edge, not between rows).
+- CSS: `.row-menu-btn.grid` removed; `.gallery-cell .row-menu` now pins to
+  the card's own corner (`top: 8px; right: 8px`).
+- Gotcha hit while writing this: an HTML comment inside a component template
+  that contained a **backtick** terminated the enclosing JS template literal
+  and broke the file. Templates are backtick strings — never use one inside.
+- Verified: `/api/thumb` cold 0.45 s → memory hit 0.85 ms, `no-store` header,
+  404 for a non-media file, thumb dir not recreated; the jsdom render harness
+  now has 32 checks (no ⋮ on cards, right-click and long-press open the
+  actions menu, the click ending a long press does not navigate, list keeps
+  its ⋮, thumbnail URLs carry no cache-buster); the tv.js harnesses have
+  24 + 23 checks (activation on release, long press fires `contextmenu`,
+  release after a long press does not activate, fallback activation when an
+  element has no menu, selects still arm/disarm).
