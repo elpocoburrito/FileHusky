@@ -737,3 +737,40 @@ it selected the item *above* the highlighted one.
   both layers reverted reproduces the bug (focus jumps up, activation lands on
   the wrong row), so the test is meaningful. The other suites are unchanged:
   24 + 35 in the tv harnesses and 32 in the jsdom render pass.
+
+## Fix: focus alternated with the sticky chrome instead of walking the list
+
+Two symptoms, one cause: on the player page, ↑ through the queue alternated
+between a queue row and the player; in the browser, ↑ from the top visible row
+jumped to the top nav bar instead of scrolling the list up.
+
+- Cause: `moveFocus()` scored candidates by pure screen geometry in a single
+  pass. The sticky player and the sticky header float *over* the scrolled
+  content, so a queue row and a player control — or a list row and a header
+  button — can look equally close "above" the current element:
+  - the top visible queue row and the seek bar above it are ~55–63 px apart,
+    so the seek bar sometimes won → focus went to the player, and the next ↓
+    came back to a row (the alternating jank);
+  - a row scrolled behind the header has the *same* centre as a header button
+    (both in the 0–60 px band), an exact tie that DOM order resolved in favour
+    of the nav bar.
+- Fix, three parts in `tv.js`:
+  - **Region preference** (`regionOf()`): navigation prefers candidates in the
+    same region as the current element — `main` content, `.app-header`, the
+    player's `.video-area`. Four passes, most specific first: same region
+    without wrapping, any region without wrapping, then the same two with
+    wrap-around. A list is walked to its edge (last row → info card → player,
+    or last row → toolbar → header) before any other region is considered.
+  - **Tie-break nudge**: aligned candidates score `primary + secondary * 0.05`,
+    so a full-width row beats an equally distant header button that is off to
+    the side.
+  - **Wrap is now a last resort** (it used to be part of the single pass), so
+    leaving a list at its edge always wins over cycling inside it.
+- `revealFocus()` (previous commit) then scrolls the chosen row out from under
+  whichever overlay covers it, so each step is visible.
+- Verified: the queue harness now reproduces the jank with a realistically
+  tall seek bar — reverting only the region preference makes it focus
+  `vc-seek` then a `file-row` (exactly the reported alternation) — and a new
+  browse harness (7 checks) reproduces the nav-bar jump when the region rule
+  and the tie-break are both reverted. With the fix: 24 + 35 + 10 + 7 harness
+  checks and the 32-check jsdom render pass are all green.

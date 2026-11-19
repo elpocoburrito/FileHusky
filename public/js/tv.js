@@ -235,21 +235,32 @@ const TvMode = (function () {
   }
 
   /**
-   * Move the focus one step in `dir`.
+   * The page region an element belongs to.
+   *
+   * Navigation prefers staying inside the region it is in (`main` content,
+   * the page header, the player surface). Pure geometry is not enough: the
+   * sticky player and the sticky header float over the content, so a queue row
+   * and a player/header button can look equally "above" the current element —
+   * which made the focus alternate between the list and the chrome instead of
+   * walking the list.
+   */
+  function regionOf(el) {
+    return (el.closest && el.closest('main, .app-header, .video-area')) || document.body;
+  }
+
+  /**
+   * Best candidate in `dir` from `cur`, or null.
    *
    * Candidates lined up on the perpendicular axis win on raw distance, so a
    * file list walks row by row instead of jumping to a closer button that
-   * happens to sit beside the current row. When nothing is lined up the
-   * off-axis penalty (`secondary * 2`) picks the most natural neighbour.
-   * At the end of a list the direction wraps around, like a TV menu.
+   * happens to sit beside the current row; the tiny `secondary` term breaks
+   * ties in favour of the better-aligned neighbour (a row above beats a
+   * header button that is exactly as far away but off to the side). When
+   * nothing is lined up the off-axis penalty (`secondary * 2`) picks the most
+   * natural neighbour. `allowWrap` re-enters the far end of a list, like a TV
+   * menu, but is only tried once no candidate exists in that direction.
    */
-  function moveFocus(dir) {
-    if (DIRECTIONS.indexOf(dir) === -1) return; // never guess a direction
-    const cur = ensureFocus();
-    if (!cur || cur === document.body) return;
-    const list = candidates().filter(el => el !== cur);
-    if (!list.length) return;
-
+  function pick(list, cur, dir, allowWrap) {
     let aligned = null, alignedScore = Infinity;
     let loose = null, looseScore = Infinity;
     let wrap = null, wrapScore = -Infinity;
@@ -258,18 +269,43 @@ const TvMode = (function () {
       const g = geometry(cur, el, dir);
       if (g.primary > 1) {
         if (g.cross > 0) {
-          if (g.primary < alignedScore) { alignedScore = g.primary; aligned = el; }
+          const score = g.primary + g.secondary * 0.05;
+          if (score < alignedScore) { alignedScore = score; aligned = el; }
         } else {
           const score = g.primary + g.secondary * 2;
           if (score < looseScore) { looseScore = score; loose = el; }
         }
-      } else if (g.cross > 0) {
+      } else if (allowWrap && g.cross > 0) {
         const score = -g.primary;
         if (score > wrapScore) { wrapScore = score; wrap = el; }
       }
     }
 
-    const next = aligned || loose || wrap;
+    return aligned || loose || wrap;
+  }
+
+  /**
+   * Move the focus one step in `dir`.
+   *
+   * Four passes, most specific first: same region without wrapping, any region
+   * without wrapping, then the same two with wrap-around. That keeps the focus
+   * inside the list it is in — walking a long queue up to its first row, then
+   * to the info card, then to the player — instead of hopping to fixed chrome
+   * that happens to sit at the same distance.
+   */
+  function moveFocus(dir) {
+    if (DIRECTIONS.indexOf(dir) === -1) return; // never guess a direction
+    const cur = ensureFocus();
+    if (!cur || cur === document.body) return;
+    const list = candidates().filter(el => el !== cur);
+    if (!list.length) return;
+
+    const mine = regionOf(cur);
+    const scoped = list.filter(el => regionOf(el) === mine);
+    const next = pick(scoped, cur, dir, false)
+      || pick(list, cur, dir, false)
+      || pick(scoped, cur, dir, true)
+      || pick(list, cur, dir, true);
     if (next) applyFocus(next);
   }
 
