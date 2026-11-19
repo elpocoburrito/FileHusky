@@ -224,7 +224,38 @@ const FileManager = {
       if (item.isDirectory) return 'folder';
       if (item.isVideo) return 'movie';
       if (item.isImage) return 'image';
+      if (item.isAudio) return 'musicNote';
       return 'file';
+    },
+
+    /** CSS modifier for the type colour (list rows and gallery tiles). */
+    itemClass(item) {
+      if (item.isDirectory) return 'is-folder';
+      if (item.isVideo) return 'is-video';
+      if (item.isImage) return 'is-image';
+      if (item.isAudio) return 'is-audio';
+      return 'is-file';
+    },
+
+    // ── Gallery thumbnails (server-rendered and cached) ───────────────
+    hasThumb(item) {
+      return (item.isVideo || item.isImage) && !this.noThumb[item.path];
+    },
+
+    thumbUrl(item) {
+      const v = new Date(item.mtime).getTime();
+      return `/api/thumb?path=${encodeURIComponent(item.path)}&v=${v}`;
+    },
+
+    onThumbError(item) {
+      this.noThumb[item.path] = true;
+    },
+
+    /** list → small gallery → large gallery → list */
+    cycleViewMode() {
+      const order = ['list', 'gallery', 'gallery-lg'];
+      const i = order.indexOf(this.s.viewMode);
+      this.s.viewMode = order[(i + 1) % order.length];
     },
 
     itemSub(item) {

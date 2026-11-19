@@ -577,3 +577,30 @@ hiding rules, TV focus fixes and player/settings polish.
   every touched script, and a live-server smoke test of `/api/thumb`
   (video 480x270 JPEG, image 480 px wide, cached hit 0.9 ms, 404 for audio,
   400 for a directory/bad path) and the `isAudio` browse flag.
+
+## Fix: blank file browser (dropped methods block)
+
+Opening any folder from the home page rendered an empty page (only the page
+background) instead of the browser.
+
+- Cause: the gallery commit's `methods` patch never landed. That edit had been
+  rejected earlier with "Edit without read" and only the template half was
+  re-applied, so `itemClass`, `hasThumb`, `thumbUrl`, `onThumbError` and
+  `cycleViewMode` (plus the `isAudio` branch of `itemIcon`) were missing while
+  the template already called them. Vue threw
+  `TypeError: itemClass is not a function` during the first render, which
+  aborts the component render and leaves `#app` empty.
+- Fix: the whole methods block is back in `FileManager.methods`, in the order
+  the template uses it (type class → thumbnail helpers → view cycling).
+- Verification this time is a **render test**, not just lint: a throwaway jsdom
+  harness (`/tmp`, not committed) boots the real `index.html` markup with the
+  real scripts concatenated into one eval (classic scripts share a lexical
+  global scope; a separate eval per file would not) and a canned `fetch`.
+  It asserts 25 things: the browse page renders, list/gallery/large layouts,
+  thumbnails only for video+image, TV mode hiding non-media and defaulting to
+  the large gallery, leaving TV mode restoring the list, the view-toggle and
+  ⋮ row-menu click handlers, and the reported flow — home page → click a
+  folder row → browse page renders with rows and zero console errors.
+- Lesson recorded: a template that calls a method is not safe to ship on
+  `node --check` + linter alone; the jsdom render pass catches missing
+  members, wrong icons and broken `v-if` chains in one shot.
