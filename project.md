@@ -713,3 +713,27 @@ jumped straight to the player's controls instead of walking up to the
   comes the info card, and the step after that reaches the player controls.
   The other harness (24) and the jsdom render pass (32) are unchanged and
   still green.
+
+## Fix: controller A did “up, then activate”
+
+Pressing A on a gamepad moved the focus up one element before activating, so
+it selected the item *above* the highlighted one.
+
+- Cause: `GAMEPAD_ACTIONS` still mapped button 0 → `'select'` and 1 →
+  `'back'` (left over from the first gamepad implementation). `pollGamepads()`
+  feeds every action in that map through the direction/repeat loop, so A put
+  `'select'` into the `active` set and `moveFocus('select')` ran.
+  `geometry()` only adds a sign for `'down'`/`'right'` and treats anything
+  else as the negative axis, so an unknown direction silently became **up**.
+  B did the same thing (up) before going back.
+- Fix: `GAMEPAD_ACTIONS` is the D-pad only (`12..15`); A and B are handled
+  exclusively by `padSelect()` / `goBack()`. As a second layer, `moveFocus()`
+  now returns early for anything that is not in `DIRECTIONS`, so a non-direction
+  action can never be interpreted as movement again.
+- Verified with a new gamepad harness (fake `navigator.getGamepads` + the real
+  RAF poll loop): holding A keeps the focus, releasing activates exactly once,
+  a 700 ms hold opens the context menu without activating, and D-pad up still
+  moves the focus. 10 checks. Re-running them against a copy of the file with
+  both layers reverted reproduces the bug (focus jumps up, activation lands on
+  the wrong row), so the test is meaningful. The other suites are unchanged:
+  24 + 35 in the tv harnesses and 32 in the jsdom render pass.

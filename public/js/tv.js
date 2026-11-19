@@ -55,7 +55,12 @@ const TvMode = (function () {
     'main button', 'button',
   ];
 
-  const GAMEPAD_ACTIONS = { 0: 'select', 1: 'back', 12: 'up', 13: 'down', 14: 'left', 15: 'right' };
+  // D-pad only. A (0) and B (1) are handled separately by padSelect/goBack —
+  // keeping them in this map made them flow through moveFocus(), where an
+  // unknown direction was treated as "up" (pressing A moved the focus up
+  // before activating).
+  const GAMEPAD_ACTIONS = { 12: 'up', 13: 'down', 14: 'left', 15: 'right' };
+  const DIRECTIONS = ['up', 'down', 'left', 'right'];
 
   let focusEl = null;      // element currently wearing the TV ring
   let padRaf = null;       // gamepad poll loop handle
@@ -239,6 +244,7 @@ const TvMode = (function () {
    * At the end of a list the direction wraps around, like a TV menu.
    */
   function moveFocus(dir) {
+    if (DIRECTIONS.indexOf(dir) === -1) return; // never guess a direction
     const cur = ensureFocus();
     if (!cur || cur === document.body) return;
     const list = candidates().filter(el => el !== cur);
