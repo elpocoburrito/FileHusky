@@ -1983,8 +1983,11 @@ button {
   font-weight: 700;
 }
 
-/* A <select> takes the arrow keys only after it is opened (tv.js arms it) */
-.tv-mode select.tv-armed {
+/* Armed <select> or text <input> (tv.js): dashed ring shows arrows/typing
+   now belong to this control until Enter / Escape / leaving. */
+.tv-mode select.tv-armed,
+.tv-mode input.tv-armed,
+.tv-mode textarea.tv-armed {
   outline: 3px dashed var(--accent);
   outline-offset: 3px;
 }

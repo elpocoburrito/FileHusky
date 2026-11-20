@@ -31,7 +31,19 @@ const SettingsPanel = {
     },
   },
 
+  mounted() {
+    document.addEventListener('keydown', this.onKey);
+  },
+
+  unmounted() {
+    document.removeEventListener('keydown', this.onKey);
+  },
+
   methods: {
+    onKey(e) {
+      if (this.open && e.key === 'Escape') this.$emit('close');
+    },
+
     resetAll() {
       if (!this.confirmReset) {
         this.confirmReset = true;

@@ -2,9 +2,10 @@
 
 /* global Vue, Utils, SettingsStore, TvMode */
 
-// Shared scroll memory, keyed by folder path and kept across instances
-// (the browse view is re-created on every navigation).
+// Shared scroll and focus memory, keyed by folder path and kept across
+// instances (the browse view is re-created on every navigation).
 const SCROLL_MEM = {};
+const FOCUS_MEM = {};
 
 const FileManager = {
   name: 'FileManager',
@@ -162,18 +163,35 @@ const FileManager = {
         }
         const data = await Utils.api(`/api/browse?path=${encodeURIComponent(dirPath)}`);
         this.data = data;
+        this.loading = false;
         document.title = (data.path === '/' || data.path.endsWith('\\') ? 'SrvFiles' : data.path.split(/[\\/]/).pop()) + ' — SrvFiles';
         await this.$nextTick();
         const savedScroll = this._scrollMem[data.path];
         if (savedScroll == null) window.scrollTo(0, 0);
         else window.scrollTo(0, savedScroll);
+        this.restoreTvFocus(data.path);
       } catch (e) {
         this.error = e.message;
         this.data = null;
-      } finally {
         this.loading = false;
       }
       if (!this.drives.length) this.loadDrives();
+    },
+
+    /** Put TV focus on the previously opened item in this folder, or the first item. */
+    restoreTvFocus(dirPath) {
+      if (!TvMode.state.enabled) return;
+      const wanted = FOCUS_MEM[dirPath];
+      if (wanted) {
+        const items = document.querySelectorAll('[data-tv-path]');
+        for (const el of items) {
+          if (el.getAttribute('data-tv-path') === wanted) {
+            TvMode.focusElement(el);
+            return;
+          }
+        }
+      }
+      TvMode.focusFirst(false);
     },
 
     async loadDrives() {
@@ -190,6 +208,7 @@ const FileManager = {
     },
 
     openItem(item) {
+      if (this.data) FOCUS_MEM[this.data.path] = item.path;
       if (item.isDirectory) this.navigate(item.path);
       else if (item.isVideo) {
         this.$router.push({
@@ -297,8 +316,13 @@ const FileManager = {
       if (e.key === 'Escape' && this.menuFor) this.closeMenu();
     },
 
-    /** TV mode Backspace: leaving a folder means going up one level. */
+    /** TV mode Backspace: close path edit if open, else go up one level. */
     onTvBack(e) {
+      if (this.editingPath) {
+        e.preventDefault();
+        this.editingPath = false;
+        return;
+      }
       if (!this.canGoUp) return;
       e.preventDefault();
       this.goUp();
@@ -472,7 +496,7 @@ const FileManager = {
       <!-- ── File list ───────────────────────────────────────────────── -->
       <ul v-else-if="s.viewMode === 'list'" class="file-list">
         <li v-for="item in visibleItems" :key="item.path" :class="{ 'has-menu': item.isDirectory || item.isVideo }">
-          <button class="file-row" @click="openItem(item)">
+          <button class="file-row" :data-tv-path="item.path" @click="openItem(item)">
             <span class="file-icon" :class="itemClass(item)">
               <ui-icon :name="itemIcon(item)" :size="26"></ui-icon>
             </span>
@@ -514,7 +538,7 @@ const FileManager = {
           <!-- No ⋮ button here: it sat between the rows and caught the focus
                on every move. Actions open on long press or right click, and
                tv.js dispatches a contextmenu event for a held select key. -->
-          <button class="gallery-card" @click="onCardClick(item)"
+          <button class="gallery-card" :data-tv-path="item.path" @click="onCardClick(item)"
                   @contextmenu.prevent="openItemMenu(item)"
                   @pointerdown="onCardPointerDown(item, $event)"
                   @pointerup="onCardPointerUp"

@@ -817,3 +817,81 @@ to the top or bottom.
   first queue item scrolls to 0, reaching the last scrolls to the document
   height); harness4 checks the browse page scrolls fully up at the first row.
   Totals: 24 + 38 + 19 + 8 harness checks plus the 32-check jsdom render pass.
+
+----
+
+## 2026-11-15 — Full TV/keyboard/gamepad/remote navigation overhaul
+
+End-to-end audit and rewrite of the navigation engine (`public/js/tv.js`) and
+its component integrations (`FileManager.js`, `Home.js`, `VideoPlayer.js`,
+`SettingsPanel.js`, `style.css`) after recurring spatial/scroll/input issues:
+
+- **Spatial picker (`scoreHorizontal` / `scoreVertical` / `moveFocus`)**:
+  - Horizontal (`←`/`→`) now stays strictly within the same visual row
+    (`vOverlap > -12`) and the same region — pressing Left/Right at the edge
+    of a gallery grid or list never teleports 2000 px up to `up-btn`,
+    `sort-select`, `reload`, or `.app-header`.
+  - Vertical (`↑`/`↓`) uses edge-to-edge scoring (`dy * 2.5 + dx +
+    centerDiff * 0.05`) instead of a strict `aligned || loose` bucket that
+    used to skip entire rows in Settings and the player.
+  - Cross-region transitions enforce the page's structural vertical order
+    (`.app-header` 0 → `.video-area` 1 → `main` 2 via `regionRank`), so
+    sticky chrome can never be entered in the wrong direction.
+  - Removed vertical page wrap (holding Down at the bottom of a long list no
+    longer catapults focus back to the top); kept wrap only inside compact
+    popup menus (`.row-menu`, `.vc-quality`).
+  - Fullscreen scoping: `activeScope()` scopes `candidates()` to
+    `document.fullscreenElement` when active, so invisible header/queue
+    elements behind fullscreen can never take focus.
+- **Deterministic, container-aware scrolling (`scrollToFocus` /
+  `scrollToRegionEdge`)**:
+  - Replaced `scrollIntoView` + `elementFromPoint` (which broke inside
+    scrollable modals and measured tiny child buttons inside `.vcontrols`
+    instead of `.video-area` / `.app-header`) with exact container math:
+    scrolls inner `overflow-y: auto` containers (`.settings-body`,
+    `.modal-card`, `.vc-quality`, `.tag-fs`), horizontal overflow containers
+    (`.breadcrumbs`, `.drive-row`), and the page itself with exact
+    `stickyTopInset()` clearance.
+  - Geometric edge check (no candidate further in `dir` within the region,
+    replacing the broken DOM `list[0] === el` check) scrolls cleanly to `0`
+    or `maxScroll` regardless of which column or row button is focused.
+- **Arm-to-edit for text inputs and `<select>` parity**:
+  - Text inputs (`search-input`, etc.) no longer trap arrow keys when passing
+    through; Enter / click / programmatic focus / typing arms them
+    (`.tv-armed` dashed ring), Escape or ↑/↓ (single-line) disarms them.
+  - Gamepad `A` now toggles (disarms) an armed `<select>` instead of
+    re-arming it; `Backspace` / `Escape` / gamepad `B` disarm an armed
+    `<select>` or `<input>` before closing layers or navigating back.
+- **Layer lifecycle & focus memory**:
+  - Closing any modal/sheet/menu restores focus to `lastPageFocus` (the
+    opener element) instead of dropping focus to `<body>`.
+  - `layer()` ignores Vue `-leave-active` transitioning overlays so closing
+    Settings doesn't trap focus during its 250 ms animation.
+  - `SettingsPanel.js` now closes immediately on `Escape`; `VideoPlayer.js`
+    fixes the unreachable `externalOpen` Escape check, closes `.tag-below` on
+    `tv-back`, and clears `_tvLastControl` when focus leaves `.video-area`
+    so opening a video from the queue lands on play/pause while prev/next
+    stays on prev/next.
+- **Loading / folder-return focus & `init()`**:
+  - `refocus()` waits while a `.spinner` is visible in `main` and cancels on
+    any user input (`clearRefocus()`) so a pending timer can never yank focus
+    away. `FileManager.load()` clears `loading = false` *before* `$nextTick`
+    so scroll + focus restoration see the rendered items, and remembers the
+    last opened item per folder (`FOCUS_MEM` + `data-tv-path`). `Home.load()`
+    refocuses once favorites render; both `Home` (`adding`) and `FileManager`
+    (`editingPath`) close their inline forms on `tv-back`.
+  - `TvMode.init()` restores TV mode on reload without clobbering the user's
+    chosen `viewMode` or flashing the hint toast.
+- **Gamepad & remote polish**:
+  - Analog stick reads only the single dominant axis (`readPadDirection`) to
+    prevent diagonal double-moves; polling runs only while a gamepad is
+    connected (`gamepadconnected`/`gamepaddisconnected`).
+  - Added remote keys (`DPadCenter`, `Accept`, `OK`, `Back`, `XF86Back`,
+    `Exit`, `ContextMenu`, `Menu`), `PREFER` includes `.remote-btn-main`,
+    `onKeyUp` consumes activate releases, and window `blur` cancels pending
+    long-press timers.
+  - `isVisible()` guards `style.opacity !== '' && Number(style.opacity) === 0`
+    instead of bare `Number("") === 0`.
+- Verified: `node --check` on all touched files + 5 test suites (131 checks:
+  40 in `tv-audit.mjs`, 13 in `render-audit.mjs`, 32 in `render-check.mjs`,
+  38 in `tv-harness2.mjs`, 8 in `tv-harness4.mjs`) — all green.

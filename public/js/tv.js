@@ -3,18 +3,33 @@
 /*
  * TV mode turns the UI into a focus-driven, pointer-free interface:
  *
- *   ← → ↑ ↓        move the focus spatially (nearest neighbour in that direction)
- *   Enter / Space  activate the focused element
- *   Backspace      back (close a menu/dialog, go up a folder, browser back)
+ *   ← → ↑ ↓        move focus spatially
+ *   Enter / Space  activate on release (hold ~600 ms for an item's menu)
+ *   Backspace      back (disarm control → close layer → leave fullscreen →
+ *                  folder up → history back → home)
  *
- * Bluetooth remotes and TV keyboards already send exactly those keys, so no
- * special handling is needed for them; game controllers are polled through the
- * Gamepad API (D-pad, left stick, A = select, B = back).
+ * Bluetooth remotes and keyboards send those keys directly (plus optional
+ * DPadCenter / OK / Back / ContextMenu keys); game controllers are polled via
+ * the Gamepad API (D-pad, dominant left-stick axis, A = select / hold = menu,
+ * B = back).
  *
- * The engine keeps a `.tv-focus` ring on the focused element (programmatic
- * focus does not always match `:focus-visible`) and scopes navigation to the
- * topmost open layer (dialog, quality menu, row menu, fullscreen tag panel) so
- * arrow keys cannot wander off into the page behind a modal.
+ * Architecture:
+ *   - Spatial picker: horizontal moves stay strictly on the same visual row
+ *     inside the same region (so Left/Right never teleports to a toolbar or
+ *     header). Vertical moves score edge-to-edge distance (`dy * 2.5 + dx`)
+ *     within the current region first, crossing stacked regions (header ↔
+ *     player ↔ main) only at a region edge. No vertical wrap on scrollable
+ *     pages (holding Down at the bottom never catapults you back to the top).
+ *   - Deterministic scrolling: computes the exact scroll container (page or
+ *     scrollable modal/sheet/menu) and sticky chrome inset (.app-header,
+ *     .video-area) directly, overriding `scroll-behavior: smooth` for the call,
+ *     and scrolls all the way to 0 / maxScroll at a region's first / last stop.
+ *   - Arm-to-edit: both <select> dropdowns and text <input> fields pass arrows
+ *     through when merely focused, so navigation never gets trapped in a search
+ *     box or a settings dropdown. Enter / Space / click / typing arms them
+ *     (`.tv-armed`); Escape / Back / leaving disarms them.
+ *   - Layer lifecycle: dialogs, sheets and menus trap navigation and remember
+ *     the opener element so closing returns the focus ring where you left off.
  */
 
 /* global Vue, SettingsStore */
@@ -32,8 +47,18 @@ const TvMode = (function () {
     ArrowDown: 'down', Down: 'down',
   };
 
-  /** "Go back" keys: Backspace, Escape and the browser-back keys some remotes send. */
-  const BACK_KEYS = ['Backspace', 'Escape', 'Esc', 'BrowserBack', 'GoBack'];
+  /** Keys that activate the focused control (keyboard + Bluetooth remotes). */
+  const ACTIVATE_KEYS = new Set([
+    'Enter', ' ', 'Spacebar', 'Select', 'DPadCenter', 'Accept', 'OK',
+  ]);
+
+  /** Keys that go back (keyboard + Bluetooth / TV remotes). */
+  const BACK_KEYS = new Set([
+    'Backspace', 'Escape', 'Esc', 'BrowserBack', 'GoBack', 'Back', 'XF86Back', 'Exit',
+  ]);
+
+  /** Keys that directly open the focused item's context menu. */
+  const MENU_KEYS = new Set(['ContextMenu', 'Menu']);
 
   const FOCUSABLE = 'a[href], button:not([disabled]), ' +
     'input:not([disabled]):not([type="hidden"]), select:not([disabled]), ' +
@@ -42,113 +67,109 @@ const TvMode = (function () {
   /** Overlay layers — while one is open, navigation stays inside it. */
   const LAYERS = '.modal-root, .settings-root, .vc-quality, .row-menu, .tag-fs';
 
+  /** Compact popup menus where wrapping top↔bottom is helpful. */
+  const WRAP_LAYERS = '.row-menu, .vc-quality';
+
   /**
-   * Focus preference when a view is (re)focused: the content first, never the
-   * header. `main .up-btn` comes before the drive chips so an empty folder
-   * starts on “Up one level” instead of jumping to a drive shortcut.
+   * Focus preference when a view is (re)focused: content first, never the
+   * header. `main .up-btn` precedes `main .drive-chip` so an empty folder
+   * lands on “Up one level” instead of jumping to a drive shortcut.
    */
   const PREFER = [
     '.vc-center',
-    'main .file-row', 'main .gallery-card',
+    '.remote-btn-main',
+    'main .file-row',
+    'main .gallery-card',
     'main .up-btn',
     'main .drive-chip',
-    'main button', 'button',
+    'main button',
+    'button',
   ];
 
-  // D-pad only. A (0) and B (1) are handled separately by padSelect/goBack —
-  // keeping them in this map made them flow through moveFocus(), where an
-  // unknown direction was treated as "up" (pressing A moved the focus up
-  // before activating).
-  const GAMEPAD_ACTIONS = { 12: 'up', 13: 'down', 14: 'left', 15: 'right' };
+  // D-pad only. A (0) and B (1) are handled separately by padSelect / goBack.
+  const GAMEPAD_DPAD = { 12: 'up', 13: 'down', 14: 'left', 15: 'right' };
   const DIRECTIONS = ['up', 'down', 'left', 'right'];
-
-  let focusEl = null;      // element currently wearing the TV ring
-  let padRaf = null;       // gamepad poll loop handle
-  let hintTimer = null;
-  let navTimer = null;     // pending refocus retry
-  let synthetic = false;   // guards re-entrancy of our own dispatched events
-  let armedSelect = null;  // <select> that took the arrow keys (see armSelect)
-  const padHeld = new Map();
-  let pressTimer = null;   // pending activate-key press (long-press detection)
-  let pressFired = false;  // that press already opened a context menu
-  let padBackHeld = false; // B is edge-triggered (no repeat)
-  const padPress = { active: false, fired: false, timer: null };
 
   /** Hold an activate key/button this long to open the item's menu. */
   const LONG_PRESS_MS = 600;
+  const SCROLL_PAD = 16;
 
-  /* ═══ Visibility ═══════════════════════════════════════════════════════ */
+  let focusEl = null;        // element currently wearing the TV ring
+  let lastPageFocus = null;  // last focused element outside any overlay layer
+  let navFocusing = false;   // true while applyFocus() is calling .focus()
+  let padRaf = null;         // gamepad poll loop handle
+  let hintTimer = null;
+  let navTimer = null;       // pending refocus retry
+  let synthetic = false;     // guards re-entrancy of our own dispatched events
+  let armedSelect = null;    // <select> currently taking ↑/↓
+  let armedInput = null;     // text <input>/<textarea> currently taking typing
+  const padHeld = new Map();
+  let pressTimer = null;     // pending activate-key press (long-press detection)
+  let pressFired = false;    // that press already opened a context menu
+  let padBackHeld = false;   // B is edge-triggered (no repeat)
+  const padPress = { active: false, fired: false, timer: null };
+
+  /* ═══ Visibility & layers ══════════════════════════════════════════════ */
+
+  /** True while an element is animating out via Vue <transition>. */
+  function isLeaving(el) {
+    if (!el) return false;
+    if (typeof el.className === 'string') return el.className.includes('-leave-active');
+    if (el.classList && el.classList.length) {
+      for (let i = 0; i < el.classList.length; i++) {
+        if (el.classList[i].endsWith('-leave-active')) return true;
+      }
+    }
+    return false;
+  }
 
   /**
    * True when an element can be reached with the TV focus.
    *
    * `pointer-events: none` is checked along the ancestor chain because the
    * player hides its bars on a container (`.vcontrols-hidden`, `.vc-ui-hidden`)
-   * and `pointer-events` does not inherit to the children — focusing an
-   * invisible-but-laid-out button would strand the user with no visible ring.
+   * and `pointer-events` does not inherit to children.
    */
   function isVisible(el) {
     if (!el || !el.isConnected) return false;
     if (!el.getClientRects().length) return false;
     const style = getComputedStyle(el);
     if (style.display === 'none' || style.visibility === 'hidden') return false;
-    if (Number(style.opacity) === 0) return false;
-    // A zero-sized control (e.g. a slider that only expands on hover) would
-    // be an invisible focus stop; TV mode gives those a size in CSS instead.
+    if (style.opacity !== '' && Number(style.opacity) === 0) return false;
     const r = el.getBoundingClientRect();
     if (r.width < 4 || r.height < 4) return false;
     return hasPointerEvents(el);
   }
 
-  /**
-   * Scroll a focused element out from under a sticky/fixed overlay.
-   *
-   * The player page keeps its video area sticky, so the queue below slides
-   * underneath it (the same goes for the sticky header). Such a row is still
-   * a valid target — skipping it is what made Up jump straight to the player
-   * from the top visible row — but the ring must not stay hidden, so after
-   * focusing we nudge the page until the element clears the overlay. The
-   * overlay is whatever element actually sits on top of the target's centre,
-   * so no component-specific knowledge is needed here.
-   */
-  function revealFocus(el) {
-    if (!document.elementFromPoint) return;
-    for (let pass = 0; pass < 2; pass++) {
-      const r = el.getBoundingClientRect();
-      const x = r.left + r.width / 2;
-      const y = r.top + r.height / 2;
-      // Outside the viewport: scrollIntoView already took care of it
-      if (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight) return;
-      const hit = document.elementFromPoint(x, y);
-      if (!hit || hit === el || el.contains(hit) || hit.contains(el)) return;
-      const cover = hit.getBoundingClientRect();
-      // Overlay hanging from the top (header, player) → push the element
-      // below it; an overlay at the bottom (bars) → pull it above.
-      const dy = cover.bottom < window.innerHeight
-        ? r.top - cover.bottom - 8
-        : r.top + r.height - cover.top + 8;
-      if (!dy) return;
-      window.scrollBy(0, dy);
-    }
-  }
-
   function hasPointerEvents(el) {
     let node = el;
     while (node && node.nodeType === 1 && node !== document.body) {
+      if (isLeaving(node)) return false;
       if (getComputedStyle(node).pointerEvents === 'none') return false;
       node = node.parentElement;
     }
     return true;
   }
 
-  /** Topmost open overlay, or null. */
+  /** Topmost active overlay layer (scoped to fullscreen if active), or null. */
   function layer() {
-    const list = document.querySelectorAll(LAYERS);
+    const fs = document.fullscreenElement || null;
+    const root = fs || document;
+    const list = root.querySelectorAll(LAYERS);
     for (let i = list.length - 1; i >= 0; i--) {
       const el = list[i];
-      if (el.getClientRects().length && getComputedStyle(el).display !== 'none') return el;
+      if (!el.isConnected || !el.getClientRects().length) continue;
+      if (isLeaving(el)) continue;
+      const st = getComputedStyle(el);
+      if (st.display === 'none' || st.visibility === 'hidden' || st.pointerEvents === 'none') continue;
+      return el;
     }
     return null;
+  }
+
+  /** Active navigation root: topmost layer, else fullscreen element, else document. */
+  function activeScope() {
+    return layer() || document.fullscreenElement || document;
   }
 
   function focusablesIn(root) {
@@ -156,7 +177,162 @@ const TvMode = (function () {
   }
 
   function candidates() {
-    return focusablesIn(layer() || document);
+    return focusablesIn(activeScope());
+  }
+
+  /* ═══ Scrolling (deterministic, container-aware) ═══════════════════════ */
+
+  /**
+   * Run a scroll operation with instant behaviour so CSS
+   * `html { scroll-behavior: smooth }` never animates behind our back.
+   */
+  function instantScroll(container, fn) {
+    const el = container || document.scrollingElement || document.documentElement;
+    const style = el && el.style;
+    const prev = style ? style.scrollBehavior : '';
+    if (style) style.scrollBehavior = 'auto';
+    try {
+      fn(el);
+    } finally {
+      if (style) style.scrollBehavior = prev;
+    }
+  }
+
+  /** Nearest vertically scrollable ancestor inside the current scope, or null (page). */
+  function verticalScrollerOf(el) {
+    const stop = layer() || document.body;
+    let node = el.parentElement;
+    while (node && node !== document.body && node !== document.documentElement) {
+      const st = getComputedStyle(node);
+      if ((st.overflowY === 'auto' || st.overflowY === 'scroll')
+          && node.scrollHeight > node.clientHeight + 1) {
+        return node;
+      }
+      if (node === stop) break;
+      node = node.parentElement;
+    }
+    return null;
+  }
+
+  /** Scroll any horizontally overflowing ancestor (breadcrumbs, drive row) so `el` is visible. */
+  function scrollHorizontalAncestors(el) {
+    let node = el.parentElement;
+    while (node && node !== document.body && node !== document.documentElement) {
+      const st = getComputedStyle(node);
+      if ((st.overflowX === 'auto' || st.overflowX === 'scroll')
+          && node.scrollWidth > node.clientWidth + 1) {
+        const cr = node.getBoundingClientRect();
+        const er = el.getBoundingClientRect();
+        const pad = 12;
+        if (er.left < cr.left + pad) {
+          instantScroll(node, () => { node.scrollLeft += er.left - (cr.left + pad); });
+        } else if (er.right > cr.right - pad) {
+          instantScroll(node, () => { node.scrollLeft += er.right - (cr.right - pad); });
+        }
+      }
+      node = node.parentElement;
+    }
+  }
+
+  /**
+   * Height from viewport top occupied by sticky chrome (.app-header, and
+   * non-fullscreen .video-area) that floats over `main`.
+   */
+  function stickyTopInset(el) {
+    if (document.fullscreenElement) return 0;
+    if (!el.closest || !el.closest('main')) return 0;
+    let bottom = 0;
+    const header = document.querySelector('.app-header');
+    if (header && header.getClientRects().length) {
+      const hr = header.getBoundingClientRect();
+      if (hr.bottom > bottom && hr.top < window.innerHeight) bottom = hr.bottom;
+    }
+    const videoArea = document.querySelector('.video-area');
+    if (videoArea && videoArea.getClientRects().length) {
+      const vr = videoArea.getBoundingClientRect();
+      if (vr.bottom > bottom && vr.top < window.innerHeight && vr.bottom < window.innerHeight) {
+        bottom = vr.bottom;
+      }
+    }
+    return bottom;
+  }
+
+  function scrollPageTo(top) {
+    const target = Math.max(0, top);
+    instantScroll(null, () => {
+      if (window.scrollTo) window.scrollTo(0, target);
+      else if (window.scrollBy) window.scrollBy(0, target);
+    });
+  }
+
+  function scrollPageBy(dy) {
+    if (!dy) return;
+    instantScroll(null, () => {
+      if (window.scrollBy) window.scrollBy(0, dy);
+    });
+  }
+
+  /**
+   * Bring `el` cleanly into view inside its scroll container (or the page),
+   * accounting for sticky header / sticky player chrome.
+   */
+  function scrollToFocus(el) {
+    scrollHorizontalAncestors(el);
+
+    // Elements inside sticky chrome (.app-header, .video-area) stay fixed in
+    // the viewport — never scroll the page underneath them when focusing them.
+    const inStickyChrome = !layer() && el.closest && !!el.closest('.app-header, .video-area');
+    if (inStickyChrome) return;
+
+    const scroller = verticalScrollerOf(el);
+    const er = el.getBoundingClientRect();
+
+    if (scroller) {
+      const cr = scroller.getBoundingClientRect();
+      const safeTop = cr.top + SCROLL_PAD;
+      const safeBottom = cr.bottom - SCROLL_PAD;
+      let dy = 0;
+      if (er.top < safeTop) dy = er.top - safeTop;
+      else if (er.bottom > safeBottom) dy = er.bottom - safeBottom;
+      if (dy) instantScroll(scroller, () => { scroller.scrollTop += dy; });
+      return;
+    }
+
+    const safeTop = stickyTopInset(el) + SCROLL_PAD;
+    const safeBottom = (window.innerHeight || 900) - SCROLL_PAD;
+    let dy = 0;
+    if (er.top < safeTop) dy = er.top - safeTop;
+    else if (er.bottom > safeBottom) dy = er.bottom - safeBottom;
+    if (dy) scrollPageBy(dy);
+  }
+
+  /**
+   * When focus arrives at the geometric top or bottom edge of its region (no
+   * focusable element exists further in that direction within the region),
+   * scroll the container all the way to 0 or its bottom so padding, titles,
+   * info cards and footers are never left half-scrolled.
+   */
+  function scrollToRegionEdge(el, dir, scoped) {
+    if (dir !== 'up' && dir !== 'down') return;
+    const inStickyChrome = !layer() && el.closest && !!el.closest('.app-header, .video-area');
+    if (inStickyChrome) return;
+
+    const further = pick(scoped, el, dir, false);
+    if (further) return;
+
+    const scroller = verticalScrollerOf(el);
+    if (scroller) {
+      instantScroll(scroller, () => {
+        scroller.scrollTop = dir === 'up' ? 0 : scroller.scrollHeight;
+      });
+      return;
+    }
+    if (dir === 'up') {
+      scrollPageTo(0);
+    } else {
+      const root = document.scrollingElement || document.documentElement;
+      scrollPageTo(root ? root.scrollHeight : 1e6);
+    }
   }
 
   /* ═══ Focus ring ═══════════════════════════════════════════════════════ */
@@ -164,228 +340,196 @@ const TvMode = (function () {
   function markFocus(el) {
     if (focusEl && focusEl !== el) focusEl.classList.remove('tv-focus');
     focusEl = el;
-    if (el && el.classList) el.classList.add('tv-focus');
-  }
-
-  /**
-   * Run a scroll operation with instant behaviour.
-   *
-   * The app sets `html { scroll-behavior: smooth }`, which makes every
-   * `scrollIntoView()` animate — and a measurement taken right after it would
-   * still see the old position, so the reveal pass and the smooth animation
-   * fought each other (jitter on the way down, a half-scrolled position on the
-   * way up). Navigation scrolls must be immediate and measurable, so the
-   * inline style overrides the CSS for the duration of the call.
-   */
-  function instantScroll(fn) {
-    const root = document.scrollingElement || document.documentElement;
-    const style = root && root.style;
-    const prev = style ? style.scrollBehavior : '';
-    if (style) style.scrollBehavior = 'auto';
-    try {
-      fn(root);
-    } finally {
-      if (style) style.scrollBehavior = prev;
+    if (el && el.classList) {
+      el.classList.add('tv-focus');
+      if (!el.closest || !el.closest(LAYERS)) lastPageFocus = el;
     }
-  }
-
-  /** Scroll the page to a given offset, immediately. */
-  function scrollPageTo(top) {
-    instantScroll(() => {
-      if (window.scrollTo) window.scrollTo(0, top);
-      else window.scrollBy(0, top);
-    });
   }
 
   function applyFocus(el, scroll) {
     if (!el) return null;
+    clearRefocus();
+    navFocusing = true;
     try {
-      el.focus({ preventScroll: true });
-    } catch {
-      el.focus();
+      try {
+        el.focus({ preventScroll: true });
+      } catch {
+        el.focus();
+      }
+    } finally {
+      navFocusing = false;
     }
     markFocus(el);
-    if (scroll !== false) {
-      instantScroll(() => {
-        el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-        revealFocus(el);
-      });
-    }
+    if (scroll !== false) scrollToFocus(el);
     return el;
   }
 
   /** Focus whatever is best right now (used when nothing valid holds focus). */
   function focusFirst(scroll) {
-    const scope = layer();
-    const all = scope ? focusablesIn(scope) : candidates();
+    const scope = activeScope();
+    const all = focusablesIn(scope);
     if (!all.length) return null;
     for (const sel of PREFER) {
-      const el = (scope || document).querySelector(sel);
+      const el = scope.querySelector(sel);
       if (el && isVisible(el)) return applyFocus(el, scroll);
     }
     return applyFocus(all[0], scroll);
   }
 
-  /** Return a valid focused element, repairing focus after the DOM changed. */
+  /** Return a valid focused element inside the active scope, repairing focus if needed. */
   function ensureFocus() {
+    const scope = activeScope();
+    const inScope = (el) => el && el !== document.body && isVisible(el)
+      && (scope === document || scope.contains(el));
     const cur = document.activeElement;
-    if (cur && cur !== document.body && isVisible(cur)) return cur;
-    if (focusEl && focusEl.isConnected && isVisible(focusEl)) return applyFocus(focusEl, false);
+    if (inScope(cur)) return cur;
+    if (inScope(focusEl)) return applyFocus(focusEl, false);
     return focusFirst();
   }
 
   /* ═══ Spatial navigation ═══════════════════════════════════════════════ */
 
-  function overlap(a1, a2, b1, b2) {
-    return Math.min(a2, b2) - Math.max(a1, b1);
-  }
-
-  /**
-   * Relative geometry between the current element and a candidate.
-   * `primary` is the distance along the direction of travel, `secondary` the
-   * off-axis offset and `cross` the size of the shared projection on the
-   * perpendicular axis (> 0 means the two elements line up, e.g. two rows of
-   * the same list or two buttons of the same bar).
-   */
-  function geometry(cur, el, dir) {
-    const a = cur.getBoundingClientRect();
-    const b = el.getBoundingClientRect();
-    const acx = a.left + a.width / 2, acy = a.top + a.height / 2;
-    const bcx = b.left + b.width / 2, bcy = b.top + b.height / 2;
-    if (dir === 'left' || dir === 'right') {
-      return {
-        primary: (bcx - acx) * (dir === 'right' ? 1 : -1),
-        secondary: Math.abs(bcy - acy),
-        cross: overlap(a.top, a.bottom, b.top, b.bottom),
-      };
-    }
-    return {
-      primary: (bcy - acy) * (dir === 'down' ? 1 : -1),
-      secondary: Math.abs(bcx - acx),
-      cross: overlap(a.left, a.right, b.left, b.right),
-    };
-  }
-
   /**
    * The page region an element belongs to.
    *
-   * Navigation prefers staying inside the region it is in (`main` content,
-   * the page header, the player surface). Pure geometry is not enough: the
-   * sticky player and the sticky header float over the content, so a queue row
-   * and a player/header button can look equally "above" the current element —
-   * which made the focus alternate between the list and the chrome instead of
-   * walking the list.
+   * Horizontal navigation never leaves its region. Vertical navigation exhausts
+   * the current region before stepping into a stacked region (.app-header ↔
+   * .video-area ↔ main), so scrolled lists never alternate with sticky chrome.
    */
   function regionOf(el) {
+    const scope = layer();
+    if (scope) return scope;
     return (el.closest && el.closest('main, .app-header, .video-area')) || document.body;
   }
 
-  /**
-   * Best candidate in `dir` from `cur`, or null.
-   *
-   * Candidates lined up on the perpendicular axis win on raw distance, so a
-   * file list walks row by row instead of jumping to a closer button that
-   * happens to sit beside the current row; the tiny `secondary` term breaks
-   * ties in favour of the better-aligned neighbour (a row above beats a
-   * header button that is exactly as far away but off to the side). When
-   * nothing is lined up the off-axis penalty (`secondary * 2`) picks the most
-   * natural neighbour. `allowWrap` re-enters the far end of a list, like a TV
-   * menu, but is only tried once no candidate exists in that direction.
-   */
-  function pick(list, cur, dir, allowWrap) {
-    let aligned = null, alignedScore = Infinity;
-    let loose = null, looseScore = Infinity;
-    let wrap = null, wrapScore = -Infinity;
-
-    for (const el of list) {
-      const g = geometry(cur, el, dir);
-      if (g.primary > 1) {
-        if (g.cross > 0) {
-          const score = g.primary + g.secondary * 0.05;
-          if (score < alignedScore) { alignedScore = score; aligned = el; }
-        } else {
-          const score = g.primary + g.secondary * 2;
-          if (score < looseScore) { looseScore = score; loose = el; }
-        }
-      } else if (allowWrap && g.cross > 0) {
-        const score = -g.primary;
-        if (score > wrapScore) { wrapScore = score; wrap = el; }
-      }
+  function scoreHorizontal(a, acx, acy, b, dir, allowWrap) {
+    const vOverlap = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+    if (vOverlap <= -12) return null; // must sit on the same visual row
+    const bcx = b.left + b.width / 2;
+    const bcy = b.top + b.height / 2;
+    const primary = (bcx - acx) * (dir === 'right' ? 1 : -1);
+    if (primary > 1) {
+      const dx = dir === 'right' ? Math.max(0, b.left - a.right) : Math.max(0, a.left - b.right);
+      return { kind: 'best', score: dx + Math.abs(bcy - acy) * 2 + primary * 0.1 };
     }
+    if (allowWrap && vOverlap > 0) return { kind: 'wrap', score: -primary };
+    return null;
+  }
 
-    return aligned || loose || wrap;
+  function scoreVertical(a, acx, acy, b, dir, allowWrap) {
+    const bcx = b.left + b.width / 2;
+    const bcy = b.top + b.height / 2;
+    const primary = (bcy - acy) * (dir === 'down' ? 1 : -1);
+    // Skip siblings sitting on the exact same row (e.g. .row-menu-btn inside a row)
+    const vEdgeSep = dir === 'down' ? (b.top - a.top) : (a.bottom - b.bottom);
+    const hOverlap = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+    if (primary > 1 && vEdgeSep > 2) {
+      const dy = dir === 'down' ? Math.max(0, b.top - a.bottom) : Math.max(0, a.top - b.bottom);
+      const dx = hOverlap > 0 ? 0 : Math.max(a.left - b.right, b.left - a.right);
+      return { kind: 'best', score: dy * 2.5 + dx + Math.abs(bcx - acx) * 0.05 };
+    }
+    if (allowWrap && hOverlap > 0) return { kind: 'wrap', score: -primary };
+    return null;
   }
 
   /**
-   * Move the focus one step in `dir`.
+   * Pick the best neighbour of `cur` in `dir` from `list`, or null.
    *
-   * Four passes, most specific first: same region without wrapping, any region
-   * without wrapping, then the same two with wrap-around. That keeps the focus
-   * inside the list it is in — walking a long queue up to its first row, then
-   * to the info card, then to the player — instead of hopping to fixed chrome
-   * that happens to sit at the same distance.
+   * - Horizontal (`left`/`right`): strictly same visual row (`vOverlap > -12`)
+   *   so pressing Left/Right at the end of a grid row or list never teleports
+   *   2000 px up to the toolbar or header.
+   * - Vertical (`up`/`down`): edge-to-edge score `dy * 2.5 + dx + centerDiff * 0.05`.
+   *   Prioritising `dy` walks cleanly row-by-row through both multi-column
+   *   grids and ragged layouts (like Settings) without skipping nearby rows.
+   * - `allowWrap`: only enabled inside compact menus (`.row-menu`, `.vc-quality`),
+   *   never on scrollable pages where auto-repeat would catapult you top↔bottom.
    */
+  function pick(list, cur, dir, allowWrap) {
+    const a = cur.getBoundingClientRect();
+    const acx = a.left + a.width / 2;
+    const acy = a.top + a.height / 2;
+    const scorer = (dir === 'left' || dir === 'right') ? scoreHorizontal : scoreVertical;
+
+    let best = null;
+    let bestScore = Infinity;
+    let wrap = null;
+    let wrapScore = -Infinity;
+
+    for (const el of list) {
+      const res = scorer(a, acx, acy, el.getBoundingClientRect(), dir, allowWrap);
+      if (!res) continue;
+      if (res.kind === 'best' && res.score < bestScore) { bestScore = res.score; best = el; }
+      else if (res.kind === 'wrap' && res.score > wrapScore) { wrapScore = res.score; wrap = el; }
+    }
+
+    return best || wrap;
+  }
+
+  /** Vertical order of stacked page regions: header (0) → player (1) → main (2). */
+  function regionRank(region) {
+    if (!region || !region.classList) return 2;
+    if (region.classList.contains('app-header')) return 0;
+    if (region.classList.contains('video-area')) return 1;
+    return 2;
+  }
+
+  /**
+   * Pick a target in an adjacent stacked region when `cur` is at the edge of
+   * its own region. Enforces header (0) → player (1) → main (2) so sticky
+   * chrome can never be entered in the wrong vertical direction.
+   */
+  function pickCrossRegion(list, cur, dir, mine) {
+    const myRank = regionRank(mine);
+    const allowed = list.filter((el) => {
+      const r = regionRank(regionOf(el));
+      return dir === 'down' ? r > myRank : r < myRank;
+    });
+    return allowed.length ? pick(allowed, cur, dir, false) : null;
+  }
+
   function moveFocus(dir) {
-    if (DIRECTIONS.indexOf(dir) === -1) return; // never guess a direction
+    if (!DIRECTIONS.includes(dir)) return;
     const cur = ensureFocus();
     if (!cur || cur === document.body) return;
     const list = candidates().filter(el => el !== cur);
     if (!list.length) return;
 
+    const scope = layer();
+    const canWrap = !!scope && !!scope.matches && scope.matches(WRAP_LAYERS);
     const mine = regionOf(cur);
     const scoped = list.filter(el => regionOf(el) === mine);
-    const next = pick(scoped, cur, dir, false)
-      || pick(list, cur, dir, false)
-      || pick(scoped, cur, dir, true)
-      || pick(list, cur, dir, true);
-    if (!next) return;
-    applyFocus(next);
-    scrollToRegionEdge(next, dir);
-  }
+    const horizontal = dir === 'left' || dir === 'right';
 
-  /**
-   * Fully scroll a region into view when its first/last stop is reached.
-   *
-   * Revealing a row puts it just below the sticky overlay, which leaves the
-   * top (or bottom) of the page partly scrolled: reaching the first row of a
-   * list would still hide the toolbar above it. Once the focus arrives at the
-   * first/last stop of its region the page goes all the way to that edge.
-   */
-  function scrollToRegionEdge(el, dir) {
-    if (dir !== 'up' && dir !== 'down') return;
-    const mine = regionOf(el);
-    const list = candidates().filter(candidate => regionOf(candidate) === mine);
-    if (!list.length) return;
-    if (dir === 'up' && list[0] === el) {
-      scrollPageTo(0);
-    } else if (dir === 'down' && list[list.length - 1] === el) {
-      const root = document.scrollingElement || document.documentElement;
-      scrollPageTo(root ? root.scrollHeight : 1e6);
+    let next = pick(scoped, cur, dir, false);
+    // Only vertical movement crosses stacked regions, and only in region order
+    if (!next && !horizontal && !scope) next = pickCrossRegion(list, cur, dir, mine);
+    if (!next && canWrap) next = pick(scoped, cur, dir, true);
+
+    if (!next) {
+      // Already at the edge of the region: make sure the edge is scrolled flush
+      scrollToRegionEdge(cur, dir, scoped);
+      return;
     }
+
+    applyFocus(next);
+    const nextRegion = regionOf(next);
+    const nextScoped = nextRegion === mine
+      ? list.filter(el => regionOf(el) === nextRegion && el !== next)
+      : candidates().filter(el => regionOf(el) === nextRegion && el !== next);
+    scrollToRegionEdge(next, dir, nextScoped);
   }
 
-  /* ═══ Activation ═══════════════════════════════════════════════════════ */
+  /* ═══ Arm-to-edit: <select> and text <input> ═══════════════════════════ */
 
-  function activate() {
-    const el = ensureFocus();
-    if (!el || el === document.body) return;
-    if (el.tagName === 'INPUT' && el.type === 'range') return; // nothing to activate
-    if (el.tagName === 'SELECT') { armSelect(el); return; }    // see armSelect
-    el.click();
-    afterActivate();
+  function isTextField(el) {
+    if (!el) return false;
+    if (el.tagName === 'TEXTAREA') return true;
+    if (el.tagName !== 'INPUT') return false;
+    return !/^(range|checkbox|radio|button|submit|reset|color|file|image)$/i.test(el.type);
   }
 
-  /* ═══ Selects (arrow keys only after the select is opened) ════════════ */
-
-  /**
-   * A <select> must not swallow the navigation keys just because it happens
-   * to have the focus: on a settings page that makes the highlight jump from
-   * list to list instead of moving on. It only takes ↑/↓ after being opened
-   * (Enter/Space or a click), shows that with a dashed ring, and gives the
-   * keys back on Enter/Escape/←/→ or when the focus leaves.
-   */
   function armSelect(el) {
-    disarmSelect();
+    disarmAll();
     armedSelect = el;
     el.classList.add('tv-armed');
   }
@@ -394,6 +538,24 @@ const TvMode = (function () {
     if (!armedSelect) return;
     armedSelect.classList.remove('tv-armed');
     armedSelect = null;
+  }
+
+  function armInput(el) {
+    if (armedInput === el) return;
+    disarmAll();
+    armedInput = el;
+    el.classList.add('tv-armed');
+  }
+
+  function disarmInput() {
+    if (!armedInput) return;
+    armedInput.classList.remove('tv-armed');
+    armedInput = null;
+  }
+
+  function disarmAll() {
+    disarmSelect();
+    disarmInput();
   }
 
   /** Move the selection of an armed <select> and fire the same events a picker would. */
@@ -407,10 +569,34 @@ const TvMode = (function () {
     el.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
+  /* ═══ Activation & layer focus tracking ════════════════════════════════ */
+
+  function activate() {
+    const el = ensureFocus();
+    if (!el || el === document.body) return;
+    if (el.tagName === 'INPUT' && el.type === 'range') return;
+    if (el.tagName === 'SELECT') {
+      if (armedSelect === el) disarmSelect();
+      else armSelect(el);
+      return;
+    }
+    if (isTextField(el)) {
+      if (armedInput === el) {
+        if (el.form && el.form.requestSubmit) el.form.requestSubmit();
+        else disarmInput();
+      } else {
+        armInput(el);
+      }
+      return;
+    }
+    el.click();
+    afterActivate();
+  }
+
   /**
-   * After a click the DOM may have opened a menu or a dialog. Anything that
-   * appeared gets the focus, and focus that died with a closed popup is
-   * repaired, so the next arrow press never starts from `document.body`.
+   * After an activation (or closing a layer), reconcile focus with the topmost
+   * layer: move into a newly opened overlay, or restore the last page focus
+   * when an overlay just closed.
    */
   function afterActivate() {
     setTimeout(() => {
@@ -422,30 +608,28 @@ const TvMode = (function () {
         if (first) applyFocus(first);
         return;
       }
-      if (!cur || cur === document.body || !isVisible(cur)) ensureFocus();
+      if (!scope && (!cur || cur === document.body || !isVisible(cur))) {
+        if (lastPageFocus && lastPageFocus.isConnected && isVisible(lastPageFocus)) {
+          applyFocus(lastPageFocus, false);
+        } else {
+          ensureFocus();
+        }
+      }
     }, 60);
   }
 
   /* ═══ Range inputs (seek / volume sliders) ═════════════════════════════ */
 
   /**
-   * A slider consumes the axis it is *drawn* along and leaves the other one
-   * for navigation, so a remote is never trapped on it (there is no Tab key):
-   *
-   *   data-tv-axis="x" (default)  ←/→ change the value, ↑/↓ move on  (seek bar)
-   *   data-tv-axis="y"            ↑/↓ change the value, ←/→ move on  (volume)
-   *
-   * The volume rocker sits *between* buttons in the control bar, so on the x
-   * axis it used to swallow every ←/→ and the bar could not be crossed. The
-   * step comes from `data-tv-step` (seek = 10 s, volume = 5 %); `input` +
-   * `change` replay what a real drag does, keeping the component's
-   * preview/commit handlers intact.
+   * A slider owns only the axis it is drawn along, leaving the other axis for
+   * navigation so a remote is never trapped on it:
+   *   data-tv-axis="x" (default) → ←/→ step value, ↑/↓ navigate (seek bar)
+   *   data-tv-axis="y"           → ↑/↓ step value, ←/→ navigate (volume)
    */
   function rangeAxis(el) {
     return (el.getAttribute('data-tv-axis') || 'x').toLowerCase() === 'y' ? 'y' : 'x';
   }
 
-  /** True when this arrow key belongs to the slider instead of the navigation. */
   function rangeOwnsKey(el, dir) {
     const horizontal = dir === 'left' || dir === 'right';
     return rangeAxis(el) === 'y' ? !horizontal : horizontal;
@@ -454,9 +638,9 @@ const TvMode = (function () {
   function stepRange(el, dir) {
     const min = parseFloat(el.min);
     const max = parseFloat(el.max);
-    if (!isFinite(min) || !isFinite(max)) return;
+    if (!Number.isFinite(min) || !Number.isFinite(max)) return;
     const rawStep = parseFloat(el.getAttribute('data-tv-step'));
-    const step = isFinite(rawStep) && rawStep > 0 ? rawStep : Math.max((max - min) / 50, 0.01);
+    const step = Number.isFinite(rawStep) && rawStep > 0 ? rawStep : Math.max((max - min) / 50, 0.01);
     const plus = dir === 'right' || dir === 'up';
     let value = (parseFloat(el.value) || 0) + (plus ? step : -step);
     value = Math.min(max, Math.max(min, Math.round(value * 1000) / 1000));
@@ -467,10 +651,6 @@ const TvMode = (function () {
 
   /* ═══ Back ═════════════════════════════════════════════════════════════ */
 
-  /**
-   * Re-dispatch Escape from the focused element so the app's own handlers run
-   * (dialogs, quality menu, tag overlay, folder row menu all close on Escape).
-   */
   function dispatchEscape() {
     if (synthetic) return;
     const target = document.activeElement && document.activeElement !== document.body
@@ -487,20 +667,50 @@ const TvMode = (function () {
   }
 
   /**
-   * Backspace: close the open layer, then leave fullscreen, then let the view
-   * handle it (`tv-back`, FileManager goes up a folder), else browser history,
-   * else home. A remote has a single back key, so it walks that order.
+   * Restore focus to the element that was active before an overlay opened.
+   * Waits briefly for Vue's v-if / leave transition to settle.
+   */
+  function restoreAfterLayerClose() {
+    setTimeout(() => {
+      if (!state.enabled) return;
+      if (layer()) return; // another layer is still open
+      if (lastPageFocus && lastPageFocus.isConnected && isVisible(lastPageFocus)) {
+        applyFocus(lastPageFocus, false);
+      } else {
+        ensureFocus();
+      }
+    }, 90);
+  }
+
+  /**
+   * Back precedence:
+   *   1. Disarm an armed <select> or text <input>
+   *   2. Close the topmost overlay layer (and restore focus to its opener)
+   *   3. Exit fullscreen
+   *   4. View-level handler (`tv-back`, e.g. FileManager goes up one folder,
+   *      VideoPlayer closes non-fullscreen tag panel)
+   *   5. Browser history back, falling back to #/home
    */
   function goBack() {
+    clearRefocus();
+    clearPress();
+    if (armedSelect) { disarmSelect(); return; }
+    if (armedInput) { disarmInput(); return; }
+
     const scope = layer();
     if (scope) {
       dispatchEscape();
-      // Dialogs that ignore Escape still offer a close button — use it.
       setTimeout(() => {
-        if (!scope.isConnected || !scope.getClientRects().length) return;
-        const close = scope.querySelector('.modal-header .icon-btn, .settings-header .icon-btn, [title="Close"]');
+        if (!scope.isConnected || isLeaving(scope) || !scope.getClientRects().length) {
+          restoreAfterLayerClose();
+          return;
+        }
+        const close = scope.querySelector(
+          '.modal-header .icon-btn, .settings-header .icon-btn, [title="Close"]'
+        );
         if (close) close.click();
-      }, 80);
+        restoreAfterLayerClose();
+      }, 60);
       return;
     }
 
@@ -511,47 +721,29 @@ const TvMode = (function () {
 
     const ev = new CustomEvent('tv-back', { cancelable: true, bubbles: true });
     document.dispatchEvent(ev);
-    if (ev.defaultPrevented) return;
+    if (ev.defaultPrevented) {
+      afterActivate();
+      return;
+    }
 
     const before = location.hash;
     window.history.back();
     setTimeout(() => {
-      // Deep-linked into a view with no history to go back to: fall back home
       if (location.hash === before && before !== '#/home') location.hash = '#/home';
     }, 200);
   }
 
-  /* ═══ Keyboard ═════════════════════════════════════════════════════════ */
+  /* ═══ Activation vs. long press ═══════════════════════════════════════ */
 
-  function isTextField(el) {
-    if (!el) return false;
-    if (el.tagName === 'TEXTAREA') return true;
-    if (el.tagName !== 'INPUT') return false;
-    return !/^(range|checkbox|radio|button|submit|reset|color|file|image)$/i.test(el.type);
-  }
-
-  /** Handle the key exclusively, so app hotkeys (player seek, etc.) stay out. */
   function consume(e) {
     e.preventDefault();
     e.stopImmediatePropagation();
   }
 
-  function isActivateKey(key) {
-    return key === 'Enter' || key === ' ' || key === 'Spacebar' || key === 'Select';
-  }
-
-  /* ═══ Activation vs. long press ═══════════════════════════════════════ */
-
-  /**
-   * A press activates on **release**, which frees the press itself for a long
-   * press: holding select (or Space/Enter) opens the item's context menu —
-   * that is how the gallery reaches “cast / download / delete” now that its
-   * ⋮ button is gone. Elements without a `contextmenu` handler fall back to a
-   * normal activation, so holding a player button still works.
-   */
   function startPress(e) {
     consume(e);
-    if (e.repeat) return;                 // auto-repeat is not a new press
+    clearRefocus();
+    if (e.repeat) return;
     clearPress();
     pressFired = false;
     pressTimer = setTimeout(() => {
@@ -562,24 +754,23 @@ const TvMode = (function () {
   }
 
   function endPress() {
-    if (pressTimer) {                     // short press: activate now
+    if (pressTimer) {
       clearTimeout(pressTimer);
       pressTimer = null;
       activate();
       return;
     }
-    pressFired = false;                   // long press already did its thing
+    pressFired = false;
   }
 
   function clearPress() {
     if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+    pressFired = false;
   }
 
   /**
-   * Ask the focused element for its actions menu. Components opt in with
-   * `@contextmenu.prevent`; a synthetic event never opens the browser menu.
-   * Without a handler this is just an activation, so a held key on a plain
-   * button behaves like a press.
+   * Dispatch a synthetic `contextmenu` on the focused element. Components opt
+   * in with `@contextmenu.prevent`; without one, fall back to normal activation.
    */
   function openContextMenu() {
     const el = ensureFocus();
@@ -590,81 +781,102 @@ const TvMode = (function () {
     else activate();
   }
 
-  /** An armed <select> owns ↑/↓ until it is closed again. */
-  function handleArmedSelect(e, key, dir) {
-    if (!armedSelect || document.activeElement !== armedSelect) return false;
-    if (dir === 'up' || dir === 'down') { consume(e); stepSelect(armedSelect, dir); return true; }
-    if (dir) { disarmSelect(); return false; }   // ←/→ leave the select, then navigate on
-    if (isActivateKey(key) || key === 'Escape') { consume(e); disarmSelect(); return true; }
-    return false;
-  }
+  /* ═══ Unified direction handling (keyboard + gamepad) ═════════════════ */
 
-  /**
-   * One direction step, whatever the input device.
-   *
-   * An armed <select> and a slider each own one axis; everything else moves
-   * the focus. The keyboard and the gamepad both come through here, so a
-   * controller gets exactly the same behaviour as a remote (the gamepad used
-   * to call moveFocus directly, which is why ↑/↓ could not touch the volume).
-   */
   function navigate(dir) {
+    clearRefocus();
+    clearPress();
     const active = document.activeElement;
     if (armedSelect && active === armedSelect) {
       if (dir === 'up' || dir === 'down') { stepSelect(armedSelect, dir); return; }
       disarmSelect();
+    }
+    if (armedInput && active === armedInput) {
+      // Single-line inputs do not use ↑/↓, so leaving vertically is always safe
+      if (dir === 'up' || dir === 'down') disarmInput();
+      else return;
     }
     const isRange = !!active && active.tagName === 'INPUT' && active.type === 'range';
     if (isRange && rangeOwnsKey(active, dir)) { stepRange(active, dir); return; }
     moveFocus(dir);
   }
 
-  /** A slider owns the axis it is drawn along; every other arrow moves focus. */
-  function handleDirection(e, dir) {
-    consume(e);
-    navigate(dir);
+  /* ═══ Keyboard ═════════════════════════════════════════════════════════ */
+
+  function handleArmedInputKey(e, active, key, dir) {
+    if (!armedInput || active !== armedInput) return false;
+    if (key === 'Escape') { consume(e); disarmInput(); return true; }
+    // Up/Down leave a single-line <input> so a user is never trapped in search
+    if (active.tagName === 'INPUT' && (dir === 'up' || dir === 'down')) {
+      consume(e);
+      disarmInput();
+      moveFocus(dir);
+      return true;
+    }
+    // Every other key (typing, ←/→ caret, Backspace, Enter to submit) belongs to the field
+    return true;
+  }
+
+  function handleArmedSelectKey(e, active, key, dir) {
+    if (!armedSelect || active !== armedSelect) return false;
+    if (dir === 'up' || dir === 'down') { consume(e); stepSelect(armedSelect, dir); return true; }
+    if (dir) { disarmSelect(); return false; }
+    if (ACTIVATE_KEYS.has(key) || BACK_KEYS.has(key)) { consume(e); disarmSelect(); return true; }
+    return false;
   }
 
   function onKeyDown(e) {
     if (!state.enabled || synthetic) return;
-    if (e.ctrlKey || e.metaKey || e.altKey) return; // leave browser/app chords alone
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
 
     const active = document.activeElement;
     const key = e.key;
+    const dir = DIRS[key];
 
-    // In a text field every key belongs to the field (a remote cannot type,
-    // but a keyboard user must be able to). Escape leaves the field.
-    if (isTextField(active)) {
-      if (key === 'Escape') { e.preventDefault(); active.blur(); }
+    if (handleArmedInputKey(e, active, key, dir)) return;
+    if (handleArmedSelectKey(e, active, key, dir)) return;
+
+    // Typing a printable character directly on an unarmed text field arms it
+    if (isTextField(active) && key.length === 1 && key !== ' ') {
+      armInput(active);
       return;
     }
 
-    const dir = DIRS[key];
-    if (handleArmedSelect(e, key, dir)) return;
-    if (dir) { handleDirection(e, dir); return; }
-    if (isActivateKey(key)) { startPress(e); return; }
-    if (BACK_KEYS.indexOf(key) !== -1) { consume(e); goBack(); }
+    if (dir) { consume(e); navigate(dir); return; }
+    if (MENU_KEYS.has(key)) { consume(e); openContextMenu(); return; }
+    if (ACTIVATE_KEYS.has(key)) { startPress(e); return; }
+    if (BACK_KEYS.has(key)) { consume(e); goBack(); }
   }
 
-  /** Release of an activate key: short press activates, long press opened a menu. */
   function onKeyUp(e) {
     if (!state.enabled) return;
-    if (!isActivateKey(e.key)) return;
-    if (!pressTimer && !pressFired) return;   // a keyup we never started
+    if (!ACTIVATE_KEYS.has(e.key)) return;
+    if (!pressTimer && !pressFired) return;
+    consume(e);
     endPress();
   }
 
   function onFocusIn(e) {
-    if (e.target && e.target.nodeType === 1) markFocus(e.target);
+    const el = e.target;
+    if (!el || el.nodeType !== 1) return;
+    markFocus(el);
+    // Programmatic or mouse focus into a text field (e.g. "Add folder",
+    // "Edit path", clicking Search) arms it immediately for typing.
+    if (!navFocusing && isTextField(el)) armInput(el);
   }
 
   function onFocusOut(e) {
     if (armedSelect && e.target === armedSelect) disarmSelect();
+    if (armedInput && e.target === armedInput) disarmInput();
     if (!e.relatedTarget) markFocus(null);
   }
 
-  /* ═══ Gamepad (controllers; D-pad + left stick) ════════════════════════ */
+  function onWindowBlur() {
+    clearPress();
+  }
 
-  /** A = select (press/hold on the same long-press rule), B = back. */
+  /* ═══ Gamepad (D-pad + dominant left stick + A/B) ═════════════════════ */
+
   function padSelect(held) {
     if (held && !padPress.active) {
       padPress.active = true;
@@ -678,13 +890,37 @@ const TvMode = (function () {
     }
     if (!held && padPress.active) {
       padPress.active = false;
-      if (padPress.timer) {          // released early: a normal select
+      if (padPress.timer) {
         clearTimeout(padPress.timer);
         padPress.timer = null;
         activate();
       }
       padPress.fired = false;
     }
+  }
+
+  /** Pick at most one direction from a gamepad (D-pad first, else dominant stick axis). */
+  function readPadDirection(pad) {
+    for (const index in GAMEPAD_DPAD) {
+      const btn = pad.buttons[index];
+      if (btn && btn.pressed) return GAMEPAD_DPAD[index];
+    }
+    const ax = pad.axes[0] || 0;
+    const ay = pad.axes[1] || 0;
+    const magX = Math.abs(ax);
+    const magY = Math.abs(ay);
+    if (magX < 0.55 && magY < 0.55) return null;
+    if (magX >= magY) return ax < 0 ? 'left' : 'right';
+    return ay < 0 ? 'up' : 'down';
+  }
+
+  function hasConnectedGamepad() {
+    if (!navigator.getGamepads) return false;
+    const pads = navigator.getGamepads();
+    for (let i = 0; i < pads.length; i++) {
+      if (pads[i]) return true;
+    }
+    return false;
   }
 
   function pollGamepads() {
@@ -696,23 +932,12 @@ const TvMode = (function () {
 
     for (const pad of pads) {
       if (!pad) continue;
-      for (const index in GAMEPAD_ACTIONS) {
-        const btn = pad.buttons[index];
-        if (btn && btn.pressed) active.add(GAMEPAD_ACTIONS[index]);
-      }
+      const d = readPadDirection(pad);
+      if (d) active.add(d);
       if (pad.buttons[0] && pad.buttons[0].pressed) selectHeld = true;
       if (pad.buttons[1] && pad.buttons[1].pressed) backHeld = true;
-      const ax = pad.axes[0] || 0;
-      const ay = pad.axes[1] || 0;
-      // 0.6 deadzone: sticks rest well below it, but a firm push registers fast
-      if (ax < -0.6) active.add('left');
-      else if (ax > 0.6) active.add('right');
-      if (ay < -0.6) active.add('up');
-      else if (ay > 0.6) active.add('down');
     }
 
-    // Directions repeat while held; select/back are edge-triggered only, so a
-    // held A cannot machine-gun activations (it becomes a long press instead).
     const now = performance.now();
     for (const action of active) {
       const held = padHeld.get(action);
@@ -736,7 +961,16 @@ const TvMode = (function () {
   }
 
   function startGamepadLoop() {
-    if (!padRaf && navigator.getGamepads) padRaf = requestAnimationFrame(pollGamepads);
+    if (!state.enabled || padRaf || !navigator.getGamepads) return;
+    padRaf = requestAnimationFrame(pollGamepads);
+  }
+
+  function onGamepadConnected() {
+    if (state.enabled) startGamepadLoop();
+  }
+
+  function onGamepadDisconnected() {
+    if (!hasConnectedGamepad()) stopGamepadLoop();
   }
 
   function stopGamepadLoop() {
@@ -766,51 +1000,70 @@ const TvMode = (function () {
 
   /* ═══ Enable / disable ═════════════════════════════════════════════════ */
 
-  function apply(on) {
+  function apply(on, isInit) {
     document.documentElement.classList.toggle('tv-mode', on);
     if (on) {
-      // TV mode is a 10-foot UI: start on the large gallery layout
-      SettingsStore.settings.viewMode = 'gallery-lg';
+      // Only switch to the TV default layout when toggling on, not on reload
+      if (!isInit) SettingsStore.settings.viewMode = 'gallery-lg';
       document.addEventListener('keydown', onKeyDown, true);
       document.addEventListener('keyup', onKeyUp, true);
       document.addEventListener('focusin', onFocusIn, true);
       document.addEventListener('focusout', onFocusOut, true);
-      startGamepadLoop();
-      showHint('TV mode on — arrows to move, Enter to select, Backspace to go back');
-      requestAnimationFrame(() => focusFirst());
+      window.addEventListener('blur', onWindowBlur);
+      window.addEventListener('gamepadconnected', onGamepadConnected);
+      window.addEventListener('gamepaddisconnected', onGamepadDisconnected);
+      if (hasConnectedGamepad()) startGamepadLoop();
+      if (!isInit) showHint('TV mode on — arrows to move, Enter to select, Backspace to go back');
+      requestAnimationFrame(() => {
+        if (!state.enabled) return;
+        const main = document.querySelector('main');
+        if (main && main.querySelector('.spinner')) refocus();
+        else focusFirst();
+      });
       return;
     }
-    // Back to the desktop default
-    SettingsStore.settings.viewMode = 'list';
+    if (!isInit) SettingsStore.settings.viewMode = 'list';
+    clearRefocus();
     document.removeEventListener('keydown', onKeyDown, true);
     document.removeEventListener('keyup', onKeyUp, true);
     document.removeEventListener('focusin', onFocusIn, true);
-    clearPress();
     document.removeEventListener('focusout', onFocusOut, true);
+    window.removeEventListener('blur', onWindowBlur);
+    window.removeEventListener('gamepadconnected', onGamepadConnected);
+    window.removeEventListener('gamepaddisconnected', onGamepadDisconnected);
+    clearPress();
     stopGamepadLoop();
-    disarmSelect();
+    disarmAll();
     markFocus(null);
     const el = document.activeElement;
     if (el && el !== document.body && el.blur) el.blur();
-    showHint('TV mode off');
+    if (!isInit) showHint('TV mode off');
   }
 
-  /** New view rendered by the router: put the focus on its content. */
+  function clearRefocus() {
+    if (navTimer) { clearTimeout(navTimer); navTimer = null; }
+  }
+
+  /**
+   * Put the focus on the current view's content once it finishes loading
+   * (waits while a `.spinner` is still visible in `main` so we don't prematurely
+   * land on the toolbar or "Up one level" before the folder rows render).
+   */
   function refocus() {
     if (!state.enabled) return;
-    if (navTimer) { clearTimeout(navTimer); navTimer = null; }
+    clearRefocus();
     let tries = 0;
     const tick = () => {
       navTimer = null;
       if (!state.enabled) return;
       const main = document.querySelector('main');
-      const ready = main ? focusablesIn(main).length > 0 : false;
-      // No scroll: the router already moved the page to the top of the view.
-      if (ready || tries >= 20) { focusFirst(false); return; }
+      const loading = main ? Boolean(main.querySelector('.spinner')) : false;
+      const ready = !loading && (!main || focusablesIn(main).length > 0);
+      if (ready || tries >= 25) { focusFirst(false); return; }
       tries++;
       navTimer = setTimeout(tick, 80);
     };
-    navTimer = setTimeout(tick, 80);
+    navTimer = setTimeout(tick, 40);
   }
 
   function setEnabled(value) {
@@ -825,15 +1078,14 @@ const TvMode = (function () {
 
   /** Called once after the app is mounted (the DOM exists from here on). */
   function init() {
-    if (state.enabled) apply(true);
+    if (state.enabled) apply(true, true);
   }
 
-  // The store is the single source of truth: the settings sheet, a reset and
-  // the header button all converge here.
   Vue.watch(() => SettingsStore.settings.tvMode, (on) => {
-    if (state.enabled !== !!on) state.enabled = !!on;
+    const enabled = Boolean(on);
+    if (state.enabled !== enabled) state.enabled = enabled;
   });
-  Vue.watch(() => state.enabled, (on) => apply(!!on));
+  Vue.watch(() => state.enabled, (on) => apply(Boolean(on), false));
   window.addEventListener('hashchange', () => { if (state.enabled) refocus(); });
 
   /* ═══ Header toggle button ═════════════════════════════════════════════ */
@@ -864,11 +1116,9 @@ const TvMode = (function () {
     init,
     refocus,
     focusFirst,
-    /** Put the TV focus on a specific element (keeps ring + reveal logic). */
+    /** Put the TV focus on a specific element (keeps ring + scroll logic). */
     focusElement(el, scroll) { return applyFocus(el, scroll); },
   };
 })();
 
-// Exposed like the other stores (SettingsStore, CastStore) and used by the
-// components' templates/handlers.
 window.TvMode = TvMode;

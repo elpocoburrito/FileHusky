@@ -274,6 +274,7 @@ const VideoPlayer = {
   async mounted() {
     document.addEventListener('keydown', this.onKey);
     document.addEventListener('focusin', this.onTvFocusIn);
+    document.addEventListener('tv-back', this.onTvBack);
     document.addEventListener('fullscreenchange', this.onFullscreenChange);
     document.addEventListener('orientationchange', this.onOrientationChange);
     this.onOrientationChange();
@@ -286,6 +287,7 @@ const VideoPlayer = {
   beforeUnmount() {
     document.removeEventListener('keydown', this.onKey);
     document.removeEventListener('focusin', this.onTvFocusIn);
+    document.removeEventListener('tv-back', this.onTvBack);
     document.removeEventListener('fullscreenchange', this.onFullscreenChange);
     document.removeEventListener('orientationchange', this.onOrientationChange);
     this.stopClock();
@@ -986,14 +988,27 @@ const VideoPlayer = {
       return (e && e.pointerType) || (this.isTouchDevice() ? 'touch' : 'mouse');
     },
 
-    /** TV focus entered the player — make sure the controls it targets are shown */
+    /** TV focus entered or left the player — remember active control and keep UI visible */
     onTvFocusIn(e) {
       const el = e.target;
-      // Remember which control the remote is on, so a media change can put the
-      // focus back there instead of jumping to the centre play button.
-      if (el && el.closest && el.closest('.video-area')) this._tvLastControl = el;
-      if (!TvMode.state.enabled || this.phase !== 'ready') return;
-      if (el && el.closest && el.closest('.video-area')) this.showControls();
+      if (!el || el === document.body) return;
+      if (el.closest && el.closest('.video-area')) {
+        // Remember which control the remote is on, so a media change (prev/next)
+        // restores focus there instead of jumping back to play/pause.
+        this._tvLastControl = el;
+        if (TvMode.state.enabled && this.phase === 'ready') this.showControls();
+      } else if (!el.closest || !el.closest('.modal-root, .settings-root, .vc-quality, .tag-fs')) {
+        // Focus moved intentionally to the queue/header — don't reuse an old player button
+        this._tvLastControl = null;
+      }
+    },
+
+    /** TV Backspace closes the non-fullscreen tag panel or open player modals first. */
+    onTvBack(e) {
+      if (this.externalOpen) { e.preventDefault(); this.externalOpen = false; return; }
+      if (this.castOpen) { e.preventDefault(); this.castOpen = false; return; }
+      if (this.qualityOpen) { e.preventDefault(); this.qualityOpen = false; return; }
+      if (this.tagsOpen) { e.preventDefault(); this.tagsOpen = false; }
     },
 
     /** Pointer moved over the player — reveal controls (mouse only) */
@@ -1135,7 +1150,11 @@ const VideoPlayer = {
     },
 
     onKey(e) {
-      if (this.phase !== 'ready' || this.externalOpen) return;
+      if (this.externalOpen) {
+        if (e.key === 'Escape') this.externalOpen = false;
+        return;
+      }
+      if (this.phase !== 'ready') return;
       // While the tagging overlay is open, only Escape closes it — avoid
       // playback hotkeys (space/arrows) firing while working with tags
       if (this.tagsOpen) {

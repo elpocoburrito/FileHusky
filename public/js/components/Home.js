@@ -1,6 +1,6 @@
 /* ─── HomePage: home menu with favorite folders ───────────────────────────── */
 
-/* global Vue, Utils */
+/* global Vue, Utils, TvMode */
 
 const HomePage = {
   name: 'HomePage',
@@ -19,16 +19,24 @@ const HomePage = {
 
   mounted() {
     document.addEventListener('keydown', this.onKey);
+    document.addEventListener('tv-back', this.onTvBack);
     this.load();
   },
 
   unmounted() {
     document.removeEventListener('keydown', this.onKey);
+    document.removeEventListener('tv-back', this.onTvBack);
   },
 
   methods: {
     onKey(e) {
       if (e.key === 'Escape' && this.adding) this.adding = false;
+    },
+
+    onTvBack(e) {
+      if (!this.adding) return;
+      e.preventDefault();
+      this.adding = false;
     },
 
     async load() {
@@ -41,6 +49,10 @@ const HomePage = {
         this.error = e.message;
       } finally {
         this.loading = false;
+      }
+      if (TvMode.state.enabled) {
+        await this.$nextTick();
+        TvMode.focusFirst(false);
       }
     },
 
