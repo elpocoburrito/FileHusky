@@ -282,6 +282,7 @@ const VideoPlayer = {
     document.addEventListener('keydown', this.onKey);
     document.addEventListener('focusin', this.onTvFocusIn);
     document.addEventListener('tv-input', this.onTvInput);
+    document.addEventListener('tv-gamepad-action', this.onTvGamepadAction);
     document.addEventListener('tv-back', this.onTvBack);
     document.addEventListener('fullscreenchange', this.onFullscreenChange);
     document.addEventListener('orientationchange', this.onOrientationChange);
@@ -298,6 +299,7 @@ const VideoPlayer = {
     document.removeEventListener('keydown', this.onKey);
     document.removeEventListener('focusin', this.onTvFocusIn);
     document.removeEventListener('tv-input', this.onTvInput);
+    document.removeEventListener('tv-gamepad-action', this.onTvGamepadAction);
     document.removeEventListener('tv-back', this.onTvBack);
     document.removeEventListener('fullscreenchange', this.onFullscreenChange);
     document.removeEventListener('orientationchange', this.onOrientationChange);
@@ -824,11 +826,26 @@ const VideoPlayer = {
       if (!player) return;
       this.isPlaying = !player.paused;
       if (player.paused) {
+        if (this._silentPause) {
+          // Paused silently via Space / gamepad A while fullscreen & hidden
+          this._silentPause = false;
+          this.clearHideTimer();
+          return;
+        }
         this.controlsVisible = true;
         this.clearHideTimer();
       } else {
-        this.scheduleHide();
+        this._silentPause = false;
+        if (this.controlsVisible) this.scheduleHide();
       }
+    },
+
+    /** Toggle play/pause without revealing a hidden fullscreen overlay. */
+    togglePlaySilent() {
+      this._silentPause = true;
+      clearTimeout(this._silentPauseTimer);
+      this._silentPauseTimer = setTimeout(() => { this._silentPause = false; }, 300);
+      this.togglePlay();
     },
 
     onVolumeUi() {
@@ -1090,16 +1107,23 @@ const VideoPlayer = {
       return (e && e.pointerType) || (this.isTouchDevice() ? 'touch' : 'mouse');
     },
 
-    /** Handle incoming TV remote/keyboard/gamepad activity: wake hidden UI or reset hide timer. */
+    /** Handle incoming TV remote/keyboard/gamepad activity: silent pause, wake hidden UI, or reset timer. */
     onTvInput(e) {
       if (!TvMode.state.enabled || this.phase !== 'ready' || this.remote) return;
       const area = this.$refs.videoArea;
       const cur = document.activeElement;
       const inPlayer = !!area && !!cur && area.contains(cur);
       const kind = e.detail && e.detail.kind;
+      const source = e.detail && e.detail.source;
       if (!this.controlsVisible) {
-        // Wake the player overlay if focus is on the hidden video surface (or fullscreen).
-        // Never swallow 'back' so Backspace/B exits fullscreen or leaves immediately.
+        // Fullscreen + hidden overlay: Space / gamepad A toggles play/pause silently
+        // (keeps overlay hidden until a direction key or other wake press).
+        if (this.isFullscreen && (source === 'space' || source === 'gamepad-a')) {
+          e.preventDefault();
+          this.togglePlaySilent();
+          return;
+        }
+        // Any other non-back press wakes the overlay without activating blindly.
         if ((inPlayer || this.isFullscreen) && kind !== 'back') {
           e.preventDefault();
           this.wakePlayerUi();
@@ -1107,6 +1131,36 @@ const VideoPlayer = {
         return;
       }
       if (inPlayer || this.isFullscreen) this.scheduleHide();
+    },
+
+    /** Xbox-layout gamepad hotkeys (TV mode): X quality, Y loop, LT prev, RT next, Start fullscreen. */
+    onTvGamepadAction(e) {
+      if (!TvMode.state.enabled || this.phase !== 'ready') return;
+      const action = e.detail && e.detail.action;
+      const settingsOpen = Boolean(document.querySelector('.settings-root'));
+      if (action === 'quality') {
+        if (this.externalOpen || this.castOpen || this.tagsOpen || settingsOpen) return;
+        this.qualityOpen = !this.qualityOpen;
+        if (this.qualityOpen) {
+          this.showControls();
+          this.$nextTick(() => {
+            if (TvMode.state.enabled && this.qualityOpen) TvMode.focusFirst(false);
+          });
+        } else {
+          this.wakePlayerUi();
+        }
+        return;
+      }
+      if (this.qualityOpen || this.tagsOpen || this.castOpen || this.externalOpen || settingsOpen) return;
+      switch (action) {
+        case 'fullscreen': this.toggleFullscreen(); break;
+        case 'prev': this.goPrev(); break;
+        case 'next': this.goNext(); break;
+        case 'loop':
+          this.toggleLoop();
+          if (this.controlsVisible) this.scheduleHide();
+          break;
+      }
     },
 
     /** TV focus entered or left the player — wake hidden overlay or remember active control */
@@ -1281,19 +1335,24 @@ const VideoPlayer = {
         if (e.key === 'Escape') this.externalOpen = false;
         return;
       }
-      if (this.phase !== 'ready') return;
+      if (this.phase !== 'ready' || this.castOpen || document.querySelector('.settings-root')) return;
       // While the tagging overlay is open, only Escape closes it — avoid
       // playback hotkeys (space/arrows) firing while working with tags
       if (this.tagsOpen) {
         if (e.key === 'Escape') this.tagsOpen = false;
         return;
       }
-      const tag = (document.activeElement && document.activeElement.tagName) || '';
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      const active = document.activeElement;
+      const tag = (active && active.tagName) || '';
+      if (tag === 'TEXTAREA' || tag === 'SELECT' || (tag === 'INPUT' && active.type !== 'range')) return;
       const player = this.$refs.video;
       if (!player) return;
       switch (e.key) {
-        case ' ': e.preventDefault(); this.togglePlay(); break;
+        case ' ':
+          e.preventDefault();
+          if (this.isFullscreen && !this.controlsVisible) this.togglePlaySilent();
+          else this.togglePlay();
+          break;
         case 'ArrowLeft':
           if (this.remote) CastStore.seekRelative(-10).catch(() => {});
           else player.currentTime = Math.max(0, player.currentTime - 10);
@@ -1302,11 +1361,12 @@ const VideoPlayer = {
           if (this.remote) CastStore.seekRelative(10).catch(() => {});
           else player.currentTime = player.currentTime + 10;
           break;
-        case 'm': case 'M': this.toggleMute(); break;
+        case 'k': case 'K': this.toggleMute(); break;
         case 'f': case 'F': this.toggleFullscreen(); break;
         case 'l': case 'L': this.toggleLoop(); break;
-        case 'n': case 'N': this.goNext(); break;
-        case 'p': case 'P': this.goPrev(); break;
+        case 'm': case 'M': this.goNext(); break;
+        case 'n': case 'N': this.goPrev(); break;
+        case 'p': case 'P': this.togglePlay(); break;
         case 'Escape':
           if (this.externalOpen) this.externalOpen = false;
           if (this.qualityOpen) this.qualityOpen = false;
@@ -1656,7 +1716,7 @@ const VideoPlayer = {
         <div class="vc-seek-row">
           <span class="vc-time">{{ fmt(currentTime) }}</span>
           <input class="vc-seek" type="range" min="0" :max="displayDuration || 0" step="0.1"
-                 data-tv-step="10"
+                 data-tv-step="10" data-tv-down="[data-tv-id='play']"
                  :value="currentTime" :disabled="!displayDuration" :style="seekStyle()"
                  @input="seekInput" @change="seekCommit" aria-label="Seek">
           <span class="vc-time vc-time-dur">{{ fmt(displayDuration) }}</span>
@@ -1669,7 +1729,7 @@ const VideoPlayer = {
             </button>
             <!-- TV mode has no click-to-toggle surface, so the transport needs
                  its own play/pause between prev and next -->
-            <button v-if="tvMode" class="vc-btn" @click="togglePlay"
+            <button v-if="tvMode" class="vc-btn" data-tv-id="play" @click="togglePlay"
                     :title="isPlaying ? 'Pause' : 'Play'" :aria-label="isPlaying ? 'Pause' : 'Play'">
               <ui-icon :name="isPlaying ? 'pause' : 'play'" :size="28"></ui-icon>
             </button>

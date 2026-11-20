@@ -88,6 +88,14 @@ const TvMode = (function () {
 
   // D-pad only. A (0) and B (1) are handled separately by padSelect / goBack.
   const GAMEPAD_DPAD = { 12: 'up', 13: 'down', 14: 'left', 15: 'right' };
+  // Standard Xbox-layout playback hotkeys (edge-triggered, dispatched to active view)
+  const GAMEPAD_EXTRAS = [
+    { index: 2, action: 'quality' },    // X
+    { index: 3, action: 'loop' },       // Y
+    { index: 6, action: 'prev' },       // LT
+    { index: 7, action: 'next' },       // RT
+    { index: 9, action: 'fullscreen' }, // Start / Menu
+  ];
   const DIRECTIONS = ['up', 'down', 'left', 'right'];
 
   /** Hold an activate key/button this long to open the item's menu. */
@@ -107,6 +115,7 @@ const TvMode = (function () {
   let pressTimer = null;     // pending activate-key press (long-press detection)
   let pressFired = false;    // that press already opened a context menu
   let padBackHeld = false;   // B is edge-triggered (no repeat)
+  const padExtraHeld = new Set(); // X/Y/LT/RT/Start edge-triggered tracking
   const padPress = { active: false, fired: false, timer: null };
 
   /* ═══ Visibility & layers ══════════════════════════════════════════════ */
@@ -495,6 +504,17 @@ const TvMode = (function () {
     if (!DIRECTIONS.includes(dir)) return;
     const cur = ensureFocus();
     if (!cur || cur === document.body) return;
+
+    // Explicit neighbour override (e.g. seek bar data-tv-down → play/pause)
+    const overrideSel = cur.getAttribute && cur.getAttribute('data-tv-' + dir);
+    if (overrideSel) {
+      const target = activeScope().querySelector(overrideSel);
+      if (target && target !== cur && isVisible(target)) {
+        applyFocus(target);
+        return;
+      }
+    }
+
     const list = candidates().filter(el => el !== cur);
     if (!list.length) return;
 
@@ -750,11 +770,11 @@ const TvMode = (function () {
    * overlay cleanly (cancelling the wake-up press so an invisible button isn't
    * triggered blindly).
    */
-  function dispatchTvInput(kind, dir) {
+  function dispatchTvInput(kind, dir, source) {
     const ev = new CustomEvent('tv-input', {
       cancelable: true,
       bubbles: true,
-      detail: { kind, dir: dir || null },
+      detail: { kind, dir: dir || null, source: source || null },
     });
     document.dispatchEvent(ev);
     return ev.defaultPrevented;
@@ -764,7 +784,8 @@ const TvMode = (function () {
     consume(e);
     clearRefocus();
     if (e.repeat) return;
-    if (dispatchTvInput('activate')) return;
+    const src = (e.key === ' ' || e.key === 'Spacebar') ? 'space' : 'key';
+    if (dispatchTvInput('activate', null, src)) return;
     clearPress();
     pressFired = false;
     pressTimer = setTimeout(() => {
@@ -904,8 +925,8 @@ const TvMode = (function () {
       padPress.active = true;
       clearTimeout(padPress.timer);
       padPress.timer = null;
-      if (dispatchTvInput('activate')) {
-        // Consumed to wake a hidden overlay — swallow release too
+      if (dispatchTvInput('activate', null, 'gamepad-a')) {
+        // Consumed (e.g. silent fullscreen play/pause or waking hidden UI) — swallow release too
         padPress.fired = true;
         return;
       }
@@ -951,10 +972,24 @@ const TvMode = (function () {
     return false;
   }
 
+  function isPadButtonDown(pad, index) {
+    const btn = pad.buttons[index];
+    return !!btn && (btn.pressed || (typeof btn.value === 'number' && btn.value > 0.5));
+  }
+
+  function dispatchGamepadAction(action) {
+    document.dispatchEvent(new CustomEvent('tv-gamepad-action', {
+      cancelable: true,
+      bubbles: true,
+      detail: { action },
+    }));
+  }
+
   function pollGamepads() {
     if (!state.enabled) { padRaf = null; return; }
     const pads = navigator.getGamepads ? navigator.getGamepads() : [];
     const active = new Set();
+    const extrasDown = new Set();
     let selectHeld = false;
     let backHeld = false;
 
@@ -962,8 +997,11 @@ const TvMode = (function () {
       if (!pad) continue;
       const d = readPadDirection(pad);
       if (d) active.add(d);
-      if (pad.buttons[0] && pad.buttons[0].pressed) selectHeld = true;
-      if (pad.buttons[1] && pad.buttons[1].pressed) backHeld = true;
+      if (isPadButtonDown(pad, 0)) selectHeld = true;
+      if (isPadButtonDown(pad, 1)) backHeld = true;
+      for (const extra of GAMEPAD_EXTRAS) {
+        if (isPadButtonDown(pad, extra.index)) extrasDown.add(extra.action);
+      }
     }
 
     const now = performance.now();
@@ -985,6 +1023,12 @@ const TvMode = (function () {
     if (backHeld && !padBackHeld) goBack();
     padBackHeld = backHeld;
 
+    for (const action of extrasDown) {
+      if (!padExtraHeld.has(action)) dispatchGamepadAction(action);
+    }
+    padExtraHeld.clear();
+    for (const action of extrasDown) padExtraHeld.add(action);
+
     padRaf = requestAnimationFrame(pollGamepads);
   }
 
@@ -1005,6 +1049,7 @@ const TvMode = (function () {
     if (padRaf) cancelAnimationFrame(padRaf);
     padRaf = null;
     padHeld.clear();
+    padExtraHeld.clear();
     clearTimeout(padPress.timer);
     padPress.timer = null;
     padPress.active = false;

@@ -1028,3 +1028,43 @@ Four improvements across TV mode and the file browser:
   + 4-option SettingsPanel), `render-check.mjs` (37/37, 4-mode cycle + 76 px
   TV icons), `render-audit.mjs` (13/13), `tv-harness2.mjs` (38/38),
   `tv-harness4.mjs` (8/8).
+
+----
+
+## 2026-11-16 — Video player keyboard + Xbox gamepad hotkeys & seek→play focus
+
+Updated video player hotkeys across keyboard and Xbox-layout gamepads (in TV
+mode) plus explicit progress-bar → play/pause focus routing:
+
+- **Keyboard hotkeys (`VideoPlayer.js`)**:
+  - `M` = next video, `N` = previous video, `P` = play/pause toggle,
+    `K` = mute toggle (keeping `F` = fullscreen, `L` = loop, `←`/`→` = ±10 s).
+  - Hotkeys are ignored while Cast or Settings overlays are open, and now
+    still work while focus is on a range slider (`type="range"`).
+- **Silent fullscreen play/pause (`Space` + gamepad `A`)**:
+  - When fullscreen with the overlay hidden, `Space` (keyboard, normal & TV
+    mode) and gamepad `A` (TV mode) call `togglePlaySilent()` so play/pause
+    toggles back and forth without revealing the overlay (until a direction
+    key or other wake input is pressed).
+  - `tv.js` tags `tv-input` with `detail.source` (`'space'`, `'gamepad-a'`,
+    `'key'`) so `VideoPlayer.onTvInput()` distinguishes `Space`/`A` from
+    other wake inputs.
+- **Xbox gamepad hotkeys in TV mode (`tv.js` + `VideoPlayer.js`)**:
+  - Edge-triggered `tv-gamepad-action` event polled in `tv.js` (supporting
+    both digital `pressed` and analog trigger `value > 0.5`):
+    - `A` (0): select normally; silent play/pause when fullscreen + hidden
+    - `X` (2): toggle player quality menu (`.vc-quality`, focusing inside on
+      open and restoring player focus on close)
+    - `Y` (3): toggle video loop
+    - `LT` (6): previous video; `RT` (7): next video
+    - `Start` (9): toggle fullscreen
+- **Progress bar → Down selects Play/Pause**:
+  - Added declarative `data-tv-<dir>` neighbour overrides in `tv.js`
+    `moveFocus(dir)`. `.vc-seek` sets `data-tv-down="[data-tv-id='play']"`
+    targeting the bottom-bar play/pause button, so pressing Down from the
+    seek bar lands on Play/Pause instead of Mute for all input devices.
+- Verified: `player-hotkeys-test.mjs` (26/26 passing across all keyboard
+  hotkeys, analog/digital Xbox gamepad buttons, silent fullscreen Space & A
+  toggle + D-pad wake, and seek→Down→Play/Pause for keyboard & gamepad) plus
+  all 116 existing checks (`tv-audit`, `player-tv-autohide`, `render-check`,
+  `render-audit`).

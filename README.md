@@ -28,7 +28,9 @@ segment is transcoded when you reach it.
 - Direct playback of browser-compatible files ("Original" quality)
 - Mobile-friendly player UI: volume HUD, play/pause burst, hover
   volume slider, double-click fullscreen, keyboard shortcuts
-  (space, ←/→, M, F, L, N, P)
+  (space / P play-pause, ←/→ ±10 s, K mute, F fullscreen, L loop, M next,
+  N previous; Space pauses silently without revealing the overlay when
+  fullscreen and hidden)
 - Save the original file to disk, open it in an external player (VLC,
   nPlayer, …) or copy a direct stream link
 - **Tagging & ratings** — tag videos from an overlay in the player
@@ -75,7 +77,10 @@ segment is transcoded when you reach it.
   mode also hides everything that is not media (folders, videos, images and
   audio only) and starts on the TV gallery layout — leaving it restores the
   list. Gamepads are read through the Gamepad API (D-pad, left stick, A =
-  select, B = back); the mode is remembered per browser
+  select, B = back); the mode is remembered per browser. On the video
+  player, Xbox-layout gamepads also map A (select / silent play-pause when
+  fullscreen with hidden overlay), Start (fullscreen), LT/RT (previous/next
+  video), Y (loop) and X (quality settings)
 - Dark / light themes, search and sorting
 
 ## Run directly (Node.js)
