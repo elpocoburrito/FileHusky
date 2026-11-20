@@ -895,3 +895,22 @@ its component integrations (`FileManager.js`, `Home.js`, `VideoPlayer.js`,
 - Verified: `node --check` on all touched files + 5 test suites (131 checks:
   40 in `tv-audit.mjs`, 13 in `render-audit.mjs`, 32 in `render-check.mjs`,
   38 in `tv-harness2.mjs`, 8 in `tv-harness4.mjs`) — all green.
+
+----
+
+## Fix: Right from mute jumped to the seek bar instead of right-side player controls
+
+- Cause: `scoreHorizontal()` allowed up to 12 px of negative vertical overlap
+  (`vOverlap <= -12`). In `.vcontrols`, the 5 px `.vc-seek` bar sits ~10 px
+  above `.vc-btn-row` (`vOverlap ≈ -10`), so it slipped into the horizontal
+  row candidate set; because it spans across the full width, its `dx` was `0`
+  and it beat the far-right quality/loop/fullscreen buttons (`dx ≈ 850`).
+- Fix: require strict positive vertical overlap (`vOverlap <= 0`) in
+  `scoreHorizontal()` (`public/js/tv.js`). Every true horizontal row in the
+  app (including `.vc-vol-slider` vertically centered inside `.vc-btn-row`)
+  has `vOverlap > 0`, while stacked rows like `.vc-seek` are strictly
+  excluded from Left/Right and remain reachable via Up/Down.
+- Verified: added Test 11 to `tv-audit.mjs` using exact CSS geometry of
+  `.vcontrols` (prev → play → next → vol → mute → quality → loop → fullscreen
+  and back, plus Up → seek); all 142 checks across 5 suites pass and LSP is
+  clean.

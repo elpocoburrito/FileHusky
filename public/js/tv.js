@@ -404,7 +404,7 @@ const TvMode = (function () {
 
   function scoreHorizontal(a, acx, acy, b, dir, allowWrap) {
     const vOverlap = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
-    if (vOverlap <= -12) return null; // must sit on the same visual row
+    if (vOverlap <= 0) return null; // must vertically overlap (same visual row)
     const bcx = b.left + b.width / 2;
     const bcy = b.top + b.height / 2;
     const primary = (bcx - acx) * (dir === 'right' ? 1 : -1);
@@ -412,7 +412,7 @@ const TvMode = (function () {
       const dx = dir === 'right' ? Math.max(0, b.left - a.right) : Math.max(0, a.left - b.right);
       return { kind: 'best', score: dx + Math.abs(bcy - acy) * 2 + primary * 0.1 };
     }
-    if (allowWrap && vOverlap > 0) return { kind: 'wrap', score: -primary };
+    if (allowWrap) return { kind: 'wrap', score: -primary };
     return null;
   }
 
@@ -435,9 +435,9 @@ const TvMode = (function () {
   /**
    * Pick the best neighbour of `cur` in `dir` from `list`, or null.
    *
-   * - Horizontal (`left`/`right`): strictly same visual row (`vOverlap > -12`)
-   *   so pressing Left/Right at the end of a grid row or list never teleports
-   *   2000 px up to the toolbar or header.
+   * - Horizontal (`left`/`right`): strictly same visual row (`vOverlap > 0`)
+   *   so pressing Left/Right never jumps to a nearby stacked row (like the seek
+   *   bar 10 px above the transport buttons) or teleports to the toolbar/header.
    * - Vertical (`up`/`down`): edge-to-edge score `dy * 2.5 + dx + centerDiff * 0.05`.
    *   Prioritising `dy` walks cleanly row-by-row through both multi-column
    *   grids and ragged layouts (like Settings) without skipping nearby rows.
