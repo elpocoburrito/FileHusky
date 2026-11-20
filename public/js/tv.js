@@ -426,7 +426,11 @@ const TvMode = (function () {
     if (primary > 1 && vEdgeSep > 2) {
       const dy = dir === 'down' ? Math.max(0, b.top - a.bottom) : Math.max(0, a.top - b.bottom);
       const dx = hOverlap > 0 ? 0 : Math.max(a.left - b.right, b.left - a.right);
-      return { kind: 'best', score: dy * 2.5 + dx + Math.abs(bcx - acx) * 0.05 };
+      // Strongly favour candidates that share a column (hOverlap > 0) so an
+      // adjacent tile with a slightly taller title never pulls Up/Down diagonally,
+      // while ragged single-control rows (like Settings) still step row-by-row.
+      const cxPenalty = hOverlap > 0 ? 0.05 : 0.35;
+      return { kind: 'best', score: dy * 2.5 + dx * 2 + Math.abs(bcx - acx) * cxPenalty };
     }
     if (allowWrap && hOverlap > 0) return { kind: 'wrap', score: -primary };
     return null;
@@ -740,10 +744,27 @@ const TvMode = (function () {
     e.stopImmediatePropagation();
   }
 
+  /**
+   * Notify views of incoming remote/keyboard/gamepad activity before executing.
+   * VideoPlayer uses this to reset its auto-hide timer and to wake a faded-out
+   * overlay cleanly (cancelling the wake-up press so an invisible button isn't
+   * triggered blindly).
+   */
+  function dispatchTvInput(kind, dir) {
+    const ev = new CustomEvent('tv-input', {
+      cancelable: true,
+      bubbles: true,
+      detail: { kind, dir: dir || null },
+    });
+    document.dispatchEvent(ev);
+    return ev.defaultPrevented;
+  }
+
   function startPress(e) {
     consume(e);
     clearRefocus();
     if (e.repeat) return;
+    if (dispatchTvInput('activate')) return;
     clearPress();
     pressFired = false;
     pressTimer = setTimeout(() => {
@@ -786,6 +807,7 @@ const TvMode = (function () {
   function navigate(dir) {
     clearRefocus();
     clearPress();
+    if (dispatchTvInput('dir', dir)) return;
     const active = document.activeElement;
     if (armedSelect && active === armedSelect) {
       if (dir === 'up' || dir === 'down') { stepSelect(armedSelect, dir); return; }
@@ -881,6 +903,12 @@ const TvMode = (function () {
     if (held && !padPress.active) {
       padPress.active = true;
       clearTimeout(padPress.timer);
+      padPress.timer = null;
+      if (dispatchTvInput('activate')) {
+        // Consumed to wake a hidden overlay — swallow release too
+        padPress.fired = true;
+        return;
+      }
       padPress.timer = setTimeout(() => {
         padPress.timer = null;
         padPress.fired = true;
@@ -1004,7 +1032,7 @@ const TvMode = (function () {
     document.documentElement.classList.toggle('tv-mode', on);
     if (on) {
       // Only switch to the TV default layout when toggling on, not on reload
-      if (!isInit) SettingsStore.settings.viewMode = 'gallery-lg';
+      if (!isInit) SettingsStore.settings.viewMode = 'gallery-tv';
       document.addEventListener('keydown', onKeyDown, true);
       document.addEventListener('keyup', onKeyUp, true);
       document.addEventListener('focusin', onFocusIn, true);

@@ -103,20 +103,23 @@ const SettingsPanel = {
               <toggle-switch v-model="s.hideNonVideos"></toggle-switch>
             </div>
 
-            <div class="setting-row">
+            <div class="setting-row setting-row-stack">
               <div class="setting-text">
                 <span class="setting-name">Layout</span>
                 <span class="setting-desc">How files are displayed</span>
               </div>
-              <div class="segmented" role="radiogroup" aria-label="Layout">
+              <div class="segmented segmented-fill" role="radiogroup" aria-label="Layout">
                 <button :class="{on: s.viewMode === 'list'}" @click="s.viewMode = 'list'">
                   <ui-icon name="list" :size="18"></ui-icon> List
                 </button>
                 <button :class="{on: s.viewMode === 'gallery'}" @click="s.viewMode = 'gallery'">
-                  <ui-icon name="grid" :size="18"></ui-icon> Gallery
+                  <ui-icon name="grid" :size="18"></ui-icon> Small
                 </button>
                 <button :class="{on: s.viewMode === 'gallery-lg'}" @click="s.viewMode = 'gallery-lg'">
                   <ui-icon name="gridLarge" :size="18"></ui-icon> Large
+                </button>
+                <button :class="{on: s.viewMode === 'gallery-tv'}" @click="s.viewMode = 'gallery-tv'">
+                  <ui-icon name="gridTv" :size="18"></ui-icon> TV
                 </button>
               </div>
             </div>

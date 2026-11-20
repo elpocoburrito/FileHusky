@@ -8,13 +8,16 @@ segment is transcoded when you reach it.
 ## Features
 
 - Browse the entire filesystem (folders, videos, images, audio)
-- **Three display modes** for every folder — the compact list, a **gallery**
-  of 16:9 thumbnails and a **large gallery** — switched with the toolbar
-  button (list → gallery → large → list) or in Settings. Thumbnails are
-  rendered live by ffmpeg and held **in memory only** (nothing is written to
-  disk); files without a preview (audio, text) fall back to their type icon.
-  Gallery tiles have no ⋮ button — a long press (or right click, or a held
-  select on a remote/controller) opens their cast/download/delete menu
+- **Four display modes** for every folder — the compact list, a **small
+  gallery**, a **large gallery**, and a **TV gallery** (big tiles, big icons,
+  10-foot typography) — switched with the toolbar button (list → small →
+  large → TV → list) or in Settings. All three grids span the full viewport
+  width so wide screens fit more items per row, and every tile in a row
+  shares the same height. Thumbnails are rendered live by ffmpeg and held
+  **in memory only** (nothing is written to disk); files without a preview
+  (audio, text) fall back to their type icon. Gallery tiles have no ⋮ button
+  — a long press (or right click, or a held select on a remote/controller)
+  opens their cast/download/delete menu
 - On-demand HLS transcoding — start watching instantly, seek anywhere
 - Hardware-accelerated transcoding when available (NVIDIA NVENC/NVDEC,
   Intel QSV, AMD AMF, VAAPI), automatic fallback to software
@@ -67,11 +70,12 @@ segment is transcoded when you reach it.
   has been opened. Long lists stay walkable: a row that is scrolled under a
   sticky player or header is focused *and* scrolled clear of it instead of
   being skipped. The player gets a
-  play/pause button in its control bar. TV mode also hides everything that
-  is not media (folders, videos, images and audio only) and starts on the
-  large gallery layout — leaving it restores the list. Gamepads are read
-  through the Gamepad API (D-pad, left stick, A = select, B = back); the
-  mode is remembered per browser
+  play/pause button in its control bar, and its overlay fades out cleanly
+  after 3 s of playback (waking on any remote/keyboard/gamepad press). TV
+  mode also hides everything that is not media (folders, videos, images and
+  audio only) and starts on the TV gallery layout — leaving it restores the
+  list. Gamepads are read through the Gamepad API (D-pad, left stick, A =
+  select, B = back); the mode is remembered per browser
 - Dark / light themes, search and sorting
 
 ## Run directly (Node.js)

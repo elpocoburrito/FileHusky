@@ -102,13 +102,25 @@ const FileManager = {
     viewToggleIcon() {
       if (this.s.viewMode === 'list') return 'grid';
       if (this.s.viewMode === 'gallery') return 'gridLarge';
+      if (this.s.viewMode === 'gallery-lg') return 'gridTv';
       return 'list';
     },
 
     viewToggleTitle() {
       if (this.s.viewMode === 'list') return 'Small gallery view';
       if (this.s.viewMode === 'gallery') return 'Large gallery view';
+      if (this.s.viewMode === 'gallery-lg') return 'TV gallery view';
       return 'List view';
+    },
+
+    galleryIconSize() {
+      if (this.s.viewMode === 'gallery-tv') return 76;
+      if (this.s.viewMode === 'gallery-lg') return 54;
+      return 44;
+    },
+
+    galleryPlaySize() {
+      return this.s.viewMode === 'gallery-tv' ? 24 : 18;
     },
   },
 
@@ -299,9 +311,9 @@ const FileManager = {
       this.openItem(item);
     },
 
-    /** list → small gallery → large gallery → list */
+    /** list → small gallery → large gallery → TV gallery → list */
     cycleViewMode() {
-      const order = ['list', 'gallery', 'gallery-lg'];
+      const order = ['list', 'gallery', 'gallery-lg', 'gallery-tv'];
       const i = order.indexOf(this.s.viewMode);
       this.s.viewMode = order[(i + 1) % order.length];
     },
@@ -532,8 +544,11 @@ const FileManager = {
         </li>
       </ul>
 
-      <!-- ── Gallery: small (gallery) or large (gallery-lg) thumbnails ── -->
-      <div v-else class="gallery-grid" :class="{ 'gallery-lg': s.viewMode === 'gallery-lg' }">
+      <!-- ── Gallery: small (gallery), large (gallery-lg), or TV (gallery-tv) ── -->
+      <div v-else class="gallery-grid" :class="{
+        'gallery-lg': s.viewMode === 'gallery-lg',
+        'gallery-tv': s.viewMode === 'gallery-tv',
+      }">
         <div v-for="item in visibleItems" :key="item.path" class="gallery-cell">
           <!-- No ⋮ button here: it sat between the rows and caught the focus
                on every move. Actions open on long press or right click, and
@@ -546,9 +561,9 @@ const FileManager = {
             <span class="gallery-thumb" :class="itemClass(item)">
               <img v-if="hasThumb(item)" class="thumb-img" :src="thumbUrl(item)"
                    loading="lazy" decoding="async" alt="" @error="onThumbError(item)">
-              <ui-icon v-else :name="itemIcon(item)" :size="46"></ui-icon>
+              <ui-icon v-else :name="itemIcon(item)" :size="galleryIconSize"></ui-icon>
               <span v-if="item.isVideo" class="gallery-play">
-                <ui-icon name="play" :size="18"></ui-icon>
+                <ui-icon name="play" :size="galleryPlaySize"></ui-icon>
               </span>
             </span>
             <span class="gallery-text">

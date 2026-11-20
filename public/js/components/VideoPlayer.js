@@ -268,13 +268,20 @@ const VideoPlayer = {
     'cast.active'(active) {
       this.onCastActive(active);
     },
+
+    // Keep player UI visible while any overlay/menu is open; resume auto-hide on close
+    qualityOpen(open) { if (open) this.showControls(); else this.scheduleHide(); },
+    tagsOpen(open) { if (open) this.showControls(); else this.scheduleHide(); },
+    castOpen(open) { if (open) this.showControls(); else this.scheduleHide(); },
+    externalOpen(open) { if (open) this.showControls(); else this.scheduleHide(); },
   },
 
-  // TV mode adds a document-level `focusin` listener here: the player is the
-  // only view whose controls can be hidden while still focusable.
+  // TV mode adds document-level focus/input listeners here so the overlay
+  // auto-hides while playing and wakes cleanly on any remote/gamepad press.
   async mounted() {
     document.addEventListener('keydown', this.onKey);
     document.addEventListener('focusin', this.onTvFocusIn);
+    document.addEventListener('tv-input', this.onTvInput);
     document.addEventListener('tv-back', this.onTvBack);
     document.addEventListener('fullscreenchange', this.onFullscreenChange);
     document.addEventListener('orientationchange', this.onOrientationChange);
@@ -290,6 +297,7 @@ const VideoPlayer = {
     this._startSeq = (this._startSeq || 0) + 1; // invalidate any in-flight start()
     document.removeEventListener('keydown', this.onKey);
     document.removeEventListener('focusin', this.onTvFocusIn);
+    document.removeEventListener('tv-input', this.onTvInput);
     document.removeEventListener('tv-back', this.onTvBack);
     document.removeEventListener('fullscreenchange', this.onFullscreenChange);
     document.removeEventListener('orientationchange', this.onOrientationChange);
@@ -1035,10 +1043,42 @@ const VideoPlayer = {
     hideControls() {
       this.clearHideTimer();
       this.qualityOpen = false;
-      // In TV mode the overlay is the only thing a remote can navigate: hiding
-      // it would leave the arrow keys with no visible target.
-      if (TvMode.state.enabled) return;
       this.controlsVisible = false;
+      // In TV mode, if focus was on a control inside the player, park it
+      // silently on .video-area (no visible ring) so the video plays cleanly
+      // and the next remote/gamepad press wakes the overlay right back up.
+      if (!TvMode.state.enabled || this.remote) return;
+      const area = this.$refs.videoArea;
+      const cur = document.activeElement;
+      if (!area || !cur || cur === area || !area.contains(cur)) return;
+      this._tvLastControl = cur;
+      this.$nextTick(() => {
+        if (this.controlsVisible || !area.isConnected) return;
+        this._parkingHiddenFocus = true;
+        try {
+          TvMode.focusElement(area, false);
+        } finally {
+          this._parkingHiddenFocus = false;
+        }
+      });
+    },
+
+    /** Restore TV focus to the last player control (or play/pause) once UI is shown. */
+    wakePlayerUi() {
+      this.showControls();
+      this.$nextTick(() => {
+        if (!TvMode.state.enabled || !this.controlsVisible) return;
+        const area = this.$refs.videoArea;
+        if (!area) return;
+        const remembered = this._tvLastControl;
+        if (remembered && remembered !== area && area.contains(remembered) &&
+            !remembered.disabled && remembered.getClientRects().length) {
+          TvMode.focusElement(remembered, false);
+          return;
+        }
+        const fallback = area.querySelector('.vc-center, .vcontrols button:not([disabled])');
+        if (fallback) TvMode.focusElement(fallback, false);
+      });
     },
 
     /**
@@ -1050,13 +1090,41 @@ const VideoPlayer = {
       return (e && e.pointerType) || (this.isTouchDevice() ? 'touch' : 'mouse');
     },
 
-    /** TV focus entered or left the player — remember active control and keep UI visible */
+    /** Handle incoming TV remote/keyboard/gamepad activity: wake hidden UI or reset hide timer. */
+    onTvInput(e) {
+      if (!TvMode.state.enabled || this.phase !== 'ready' || this.remote) return;
+      const area = this.$refs.videoArea;
+      const cur = document.activeElement;
+      const inPlayer = !!area && !!cur && area.contains(cur);
+      const kind = e.detail && e.detail.kind;
+      if (!this.controlsVisible) {
+        // Wake the player overlay if focus is on the hidden video surface (or fullscreen).
+        // Never swallow 'back' so Backspace/B exits fullscreen or leaves immediately.
+        if ((inPlayer || this.isFullscreen) && kind !== 'back') {
+          e.preventDefault();
+          this.wakePlayerUi();
+        }
+        return;
+      }
+      if (inPlayer || this.isFullscreen) this.scheduleHide();
+    },
+
+    /** TV focus entered or left the player — wake hidden overlay or remember active control */
     onTvFocusIn(e) {
       const el = e.target;
       if (!el || el === document.body) return;
+      const area = this.$refs.videoArea;
+      if (area && el === area) {
+        // Focus arrived on .video-area from the queue or header while controls
+        // were hidden: wake the overlay and hand focus to a real control.
+        if (!this._parkingHiddenFocus && TvMode.state.enabled && this.phase === 'ready' && !this.controlsVisible) {
+          this.wakePlayerUi();
+        }
+        return;
+      }
       if (el.closest && el.closest('.video-area')) {
         // Remember which control the remote is on, so a media change (prev/next)
-        // restores focus there instead of jumping back to play/pause.
+        // or UI wake-up restores focus there instead of jumping back to play/pause.
         this._tvLastControl = el;
         if (TvMode.state.enabled && this.phase === 'ready') this.showControls();
       } else if (!el.closest || !el.closest('.modal-root, .settings-root, .vc-quality, .tag-fs')) {
@@ -1198,10 +1266,7 @@ const VideoPlayer = {
 
     scheduleHide() {
       this.clearHideTimer();
-      // TV mode keeps the overlay open: it is the only thing a remote can
-      // navigate, so letting it hide would leave the focus ring floating over
-      // controls that are no longer visible.
-      if (TvMode.state.enabled) return;
+      if (this.remote || this.qualityOpen || this.tagsOpen || this.castOpen || this.externalOpen) return;
       const player = this.$refs.video;
       if (!player || player.paused) return; // always show controls when paused
       this.hideTimer = setTimeout(() => this.hideControls(), 3000);
@@ -1489,6 +1554,7 @@ const VideoPlayer = {
 
     <!-- ── Sticky video area ─────────────────────────────────────────── -->
     <div class="video-area" ref="videoArea"
+         :tabindex="(tvMode && phase === 'ready' && !controlsVisible && !remote) ? 0 : null"
          @pointerdown="onPointerDown" @pointerup="onPointerUp"
          @pointercancel="onPointerCancel" @pointerleave="onMouseLeave"
          @pointermove="onPointerMove" @wheel.prevent="onWheel"

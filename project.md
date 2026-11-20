@@ -980,3 +980,51 @@ Audited and hardened the full HLS transcoding stack across `server.js`,
   (`transcode-test.mjs`: 26/26 checks across 10-bit+5.1+SRT MKV, odd-dim
   silent yuv444p MKV, portrait 1080×1920, 12.15 s tiny tail, `?start=12`
   resume, sample MP4, and DELETE/stop cleanup) plus 96 frontend checks.
+
+----
+
+## 2026-11-16 — TV player auto-hide, uniform full-width grids & TV gallery view
+
+Four improvements across TV mode and the file browser:
+
+- **Video player UI auto-hides in TV mode**:
+  - Removed the TV-mode block from `VideoPlayer.scheduleHide()` /
+    `hideControls()` (still kept visible while paused or while quality / tags /
+    cast / external modals are open).
+  - When the overlay fades out while focus is inside `.video-area`, focus
+    silently parks on `.video-area` (given `tabindex="0"` while hidden, with
+    `.tv-mode .video-area.tv-focus { outline: none; box-shadow: none; }` so
+    the playing video has zero overlay or ring).
+  - `tv.js` dispatches a cancelable `tv-input` event before direction/select
+    actions. `VideoPlayer.onTvInput()` intercepts direction/select while
+    hidden to wake the overlay and restore focus to `_tvLastControl` (without
+    blindly activating an invisible button), lets `back` pass straight through
+    to exit fullscreen, and resets the 3 s timer on every press while visible.
+    Navigating Up from the queue or Down from the header into `.video-area`
+    wakes the overlay automatically via `onTvFocusIn`.
+- **Fixed diagonal vertical jumps on uneven-height grid tiles**:
+  - `.gallery-cell` (`display: flex`) + `.gallery-card` (`height: 100%`) make
+    every tile in a grid row stretch to the exact same height regardless of
+    1-line vs 2-line titles.
+  - `scoreVertical()` in `tv.js` also weights off-column candidates higher
+    (`dy * 2.5 + dx * 2 + cx * (hOverlap > 0 ? 0.05 : 0.35)`), so even
+    uneven-height tiles never pull Up/Down diagonally into a neighbour column
+    while ragged Settings rows still walk cleanly row-by-row.
+- **Fourth display mode (`gallery-tv`)**:
+  - New `gallery-tv` view mode (bigger `360px` tiles, 76 px icons, 44 px play
+    badge, 1.32 rem bold titles, 1 rem subtitles, subtle 1.03× focus lift in
+    TV mode) plus `gridTv` icon in `icons.js`.
+  - Toolbar cycles `list → gallery → gallery-lg → gallery-tv → list`;
+    Settings → Layout stacks cleanly (`.setting-row-stack` + `.segmented-fill`)
+    with all four options (`List`, `Small`, `Large`, `TV`); toggling TV mode
+    on now defaults to `gallery-tv`.
+- **Full-width gallery grids**:
+  - Removed `max-width: 1100px` from `.gallery-grid` so all three gallery
+    modes (`gallery`, `gallery-lg`, `gallery-tv`) fill wide screens with more
+    columns per row (responsive `minmax(min(..., 100%), 1fr)` keeps mobile
+    overflow-free).
+- Verified: `tv-audit.mjs` (57/57, incl. uneven-height grid & `tv-input` wake
+  tests), `player-tv-autohide.mjs` (9/9, real Vue player 3 s auto-hide + wake
+  + 4-option SettingsPanel), `render-check.mjs` (37/37, 4-mode cycle + 76 px
+  TV icons), `render-audit.mjs` (13/13), `tv-harness2.mjs` (38/38),
+  `tv-harness4.mjs` (8/8).

@@ -8,7 +8,7 @@ const SettingsStore = (function () {
     tvMode: false,               // remote/controller navigation (TV icon in the header)
     // Files & folders
     hideNonVideos: false,        // only show videos + folders while browsing
-    viewMode: 'list',            // 'list' | 'gallery' | 'gallery-lg'
+    viewMode: 'list',            // 'list' | 'gallery' | 'gallery-lg' | 'gallery-tv'
     sortOrder: 'name-asc',       // name-asc | name-desc | size-asc | size-desc | date-desc | date-asc
     // Video playback
     autoplay: true,              // start playing when a video is opened

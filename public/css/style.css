@@ -420,28 +420,40 @@ button {
 .file-play { color: var(--accent); }
 
 /* ─── Gallery views (thumbnails) ────────────────────────────────────────────
-   Two sizes share one card shape: a 16:9 preview on top, name + subtitle
-   below. `gallery` = small, `gallery-lg` = large (TV mode default).       */
+   Three sizes share one uniform card shape: a 16:9 preview on top, name +
+   subtitle below. Full-width responsive grids fill wide screens with more
+   columns instead of capping at 1100 px.
+   `gallery` = small, `gallery-lg` = large, `gallery-tv` = TV-app XL cards. */
 .gallery-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: 14px;
-  padding: 12px 16px 0;
-  max-width: 1100px;
+  padding: 12px clamp(14px, 2vw, 32px) 0;
+  width: 100%;
   margin: 0 auto;
 }
 
 .gallery-grid.gallery-lg {
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr));
   gap: 18px;
 }
 
-.gallery-cell { position: relative; }
+.gallery-grid.gallery-tv {
+  grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 1fr));
+  gap: 24px;
+  padding: 16px clamp(16px, 2.5vw, 40px) 0;
+}
+
+.gallery-cell {
+  position: relative;
+  display: flex;
+}
 
 .gallery-card {
   display: flex;
   flex-direction: column;
   width: 100%;
+  height: 100%;
   padding: 0;
   border-radius: 14px;
   background: var(--surface);
@@ -452,7 +464,7 @@ button {
   -webkit-touch-callout: none;
   -webkit-user-select: none;
   user-select: none;
-  transition: transform 0.1s, background 0.15s, border-color 0.15s;
+  transition: transform 0.14s ease, background 0.15s, border-color 0.15s, box-shadow 0.15s;
 }
 .gallery-card:hover { background: var(--surface-2); border-color: var(--surface-3); }
 .gallery-card:active { transform: scale(0.98); }
@@ -464,6 +476,7 @@ button {
   justify-content: center;
   width: 100%;
   aspect-ratio: 16 / 9;
+  flex: none;
   background: var(--surface-3);
   color: var(--text-dim);
   overflow: hidden;
@@ -487,6 +500,7 @@ button {
   gap: 3px;
   padding: 9px 11px 11px;
   min-width: 0;
+  flex: 1;
 }
 
 .gallery-name {
@@ -501,12 +515,19 @@ button {
   overflow: hidden;
 }
 
-.gallery-sub { font-size: 0.78rem; color: var(--text-dim); }
+.gallery-sub { font-size: 0.78rem; color: var(--text-dim); margin-top: auto; }
 
-/* Large gallery: readable from the couch */
+/* Large gallery */
 .gallery-lg .gallery-name { font-size: 1.05rem; }
 .gallery-lg .gallery-sub { font-size: 0.86rem; }
 .gallery-lg .gallery-text { padding: 11px 14px 14px; }
+
+/* TV gallery: big tiles, big icons, 10-foot typography */
+.gallery-tv .gallery-card { border-radius: 18px; }
+.gallery-tv .gallery-text { padding: 15px 18px 18px; gap: 6px; }
+.gallery-tv .gallery-name { font-size: 1.32rem; font-weight: 700; line-height: 1.28; }
+.gallery-tv .gallery-sub { font-size: 1rem; }
+.gallery-tv .gallery-play { width: 44px; height: 44px; top: 14px; right: 14px; }
 
 .gallery-play {
   position: absolute;
@@ -751,6 +772,23 @@ button {
   gap: 14px;
   padding: 12px 0;
   min-height: 56px;
+}
+
+.setting-row-stack {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.segmented-fill {
+  display: flex;
+  width: 100%;
+}
+
+.segmented-fill button {
+  flex: 1;
+  justify-content: center;
+  padding: 6px 8px;
 }
 
 .setting-text {
@@ -1996,6 +2034,21 @@ button {
 .tv-mode .gallery-card.tv-focus {
   border-color: var(--accent);
   background: var(--surface-2);
+}
+
+/* TV gallery gets a subtle 10-foot focus lift like a native TV app */
+.tv-mode .gallery-tv .gallery-card.tv-focus {
+  position: relative;
+  z-index: 2;
+  transform: scale(1.03);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45), 0 0 0 6px var(--accent-soft);
+}
+
+/* Dormant focus parked on .video-area while the player UI is faded out
+   must stay invisible so the playing video has zero ring over it. */
+.tv-mode .video-area.tv-focus {
+  outline: none;
+  box-shadow: none;
 }
 
 /* The volume slider normally expands on hover / :focus-visible; in TV mode it
