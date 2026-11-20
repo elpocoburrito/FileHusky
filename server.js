@@ -10,6 +10,12 @@ const PORT = process.env.PORT || 3000;
 const CACHE_DIR = path.join(os.tmpdir(), 'srvfiles-cache');
 
 if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
+// Clear orphaned transcode session folders left behind by a previous run/crash
+try {
+  for (const entry of fs.readdirSync(CACHE_DIR)) {
+    fs.rmSync(path.join(CACHE_DIR, entry), { recursive: true, force: true });
+  }
+} catch {}
 
 app.use(express.static('public'));
 app.use(express.json());
@@ -168,22 +174,36 @@ function detectHwDecode() {
   }
 }
 
-/** Build ffmpeg arguments for transcoding a segment */
-function buildTranscodeArgs(seg, filePath, decodeArgs, enc) {
+/** Build ffmpeg arguments for transcoding a segment (or 1-frame init probe). */
+function buildTranscodeArgs(seg, filePath, decodeArgs, enc, meta, opts) {
+  const probeOnly = !!(opts && opts.probeOnly);
   // Hardware decode flags must come before the input they apply to
   const args = (decodeArgs || []).slice();
-  args.push(
-    '-ss', String(seg.startTime),
-    '-i', filePath,
-    '-t', String(seg.duration)
-  );
+  args.push('-ss', String(seg.startTime), '-i', filePath);
+  if (probeOnly) args.push('-frames:v', '1');
+  else args.push('-t', String(seg.duration));
 
-  // Downscale when requested and the source is larger (never upscale).
-  // -2 keeps the aspect ratio and an even height (required by h264).
+  // Primary video + optional primary audio only: drop embedded subtitles,
+  // data streams and attached cover art that would crash -f mp4 muxing.
+  args.push('-map', '0:v:0', '-map', '0:a:0?', '-sn', '-dn');
+
+  // Downscale on the short edge when requested (never upscale; portrait
+  // 1080x1920 at "720p" scales to 720x1280 rather than 406x720). Even when
+  // keeping original resolution, ensure even dimensions so 4:2:0 encoders
+  // never reject odd-sized files.
   const enc_ = enc || { resolution: 0, quality: 23, speed: 'fast' };
+  const isPortrait = !!(meta && meta.width > 0 && meta.height > 0 && meta.width < meta.height);
   if (enc_.resolution > 0) {
-    args.push('-vf', 'scale=-2:' + enc_.resolution);
+    args.push('-vf', isPortrait
+      ? 'scale=' + enc_.resolution + ':-2'
+      : 'scale=-2:' + enc_.resolution);
+  } else if (meta && ((meta.width & 1) || (meta.height & 1))) {
+    args.push('-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2');
   }
+
+  // Always output browser-playable 8-bit 4:2:0 (prevents 10-bit / 4:2:2 /
+  // 4:4:4 sources from failing NVENC H.264 or emitting unplayable profiles).
+  args.push('-pix_fmt', 'yuv420p');
 
   // Add video encoder flags
   const q = enc_.quality;
@@ -196,27 +216,31 @@ function buildTranscodeArgs(seg, filePath, decodeArgs, enc) {
       '-rc', 'vbr',
       '-cq', String(q),
       '-c:v', 'hevc_nvenc',
+      '-profile:v', 'main',
       '-tag:v', 'hvc1'   // Apple-style tag, expected by browser decoders
     );
     if (preset) args.push('-preset', preset);
   } else if (ENCODER === 'h264_qsv') {
     args.push(
       '-global_quality', String(q),
-      '-c:v', 'h264_qsv'
+      '-c:v', 'h264_qsv',
+      '-profile:v', 'high'
     );
     if (preset) args.push('-preset', preset);
   } else if (ENCODER === 'h264_nvenc') {
     args.push(
       '-rc', 'vbr',
       '-cq', String(q),
-      '-c:v', 'h264_nvenc'
+      '-c:v', 'h264_nvenc',
+      '-profile:v', 'high'
     );
     if (preset) args.push('-preset', preset);
   } else if (ENCODER === 'h264_amf') {
     args.push(
       '-rc', 'cqp',
       '-qp_i', String(q), '-qp_p', String(q),
-      '-c:v', 'h264_amf'
+      '-c:v', 'h264_amf',
+      '-profile:v', 'high'
     );
     if (preset) args.push('-quality', preset);
   } else if (ENCODER === 'h264_vaapi') {
@@ -227,14 +251,17 @@ function buildTranscodeArgs(seg, filePath, decodeArgs, enc) {
   } else {
     args.push(
       '-crf', String(q),
-      '-c:v', 'libx264'
+      '-c:v', 'libx264',
+      '-profile:v', 'high'
     );
     if (preset) args.push('-preset', preset);
   }
 
-  // Audio, PTS offset, and output
+  // Audio (downmix 5.1/7.1 to stereo 48 kHz for MSE compatibility & quality),
+  // fixed 90 kHz video timescale (guarantees init.mp4 and every segment agree
+  // and avoids 32-bit tfdt overflow on high-timescale MKV/MOV sources).
   args.push('-output_ts_offset', String(seg.startTime));
-  args.push('-c:a', 'aac', '-b:a', '128k');
+  args.push('-c:a', 'aac', '-ac', '2', '-ar', '48000', '-b:a', '128k');
   if (enc_.format === 'fmp4') {
     // Fragmented MP4 (one fragment file per HLS segment; the moov init part
     // is served separately as init.mp4 — see _ensureInit).
@@ -245,6 +272,7 @@ function buildTranscodeArgs(seg, filePath, decodeArgs, enc) {
     //   survives into tfdt so segment N starts at N*6s.
     args.push(
       '-bf', '0',
+      '-video_track_timescale', '90000',
       '-avoid_negative_ts', 'disabled',
       '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
       '-f', 'mp4'
@@ -252,7 +280,7 @@ function buildTranscodeArgs(seg, filePath, decodeArgs, enc) {
   } else {
     args.push('-muxdelay', '0', '-f', 'mpegts');
   }
-  args.push('-y', seg.path);
+  args.push('-y', seg.outPath || seg.path);
   return args;
 }
 
@@ -356,6 +384,21 @@ function formatSize(bytes) {
   return (bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
 }
 
+function streamRotation(videoStream) {
+  if (!videoStream) return 0;
+  if (videoStream.tags && videoStream.tags.rotate != null) {
+    const r = parseFloat(videoStream.tags.rotate);
+    if (Number.isFinite(r)) return r;
+  }
+  for (const sd of (videoStream.side_data_list || [])) {
+    if (sd && sd.rotation != null) {
+      const r = parseFloat(sd.rotation);
+      if (Number.isFinite(r)) return r;
+    }
+  }
+  return 0;
+}
+
 function getVideoMetadata(filePath) {
   return new Promise((resolve, reject) => {
     if (!FFPROBE) return reject(new Error('ffprobe not found'));
@@ -366,30 +409,53 @@ function getVideoMetadata(filePath) {
       '-show_streams',
       filePath
     ];
-    const proc = spawn(FFPROBE, args);
+    const proc = spawn(FFPROBE, args, { stdio: ['ignore', 'pipe', 'ignore'] });
     let data = '';
+    let settled = false;
+    const done = (err, val) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (err) reject(err);
+      else resolve(val);
+    };
+    const timer = setTimeout(() => {
+      try { proc.kill('SIGKILL'); } catch {}
+      done(new Error('ffprobe timed out'));
+    }, 15000);
     proc.stdout.on('data', (chunk) => { data += chunk; });
     proc.on('close', (code) => {
-      if (code !== 0) return reject(new Error('ffprobe failed'));
+      if (code !== 0) return done(new Error('ffprobe failed'));
       try {
         const info = JSON.parse(data);
-        const videoStream = (info.streams || []).find(s => s.codec_type === 'video');
-        const audioStream = (info.streams || []).find(s => s.codec_type === 'audio');
-        resolve({
-          duration: info.format ? parseFloat(info.format.duration || 0) : 0,
+        const allStreams = info.streams || [];
+        // Prefer real video stream over embedded album/cover art (attached_pic)
+        const videoStream = allStreams.find(s => s.codec_type === 'video' && !(s.disposition && s.disposition.attached_pic))
+          || allStreams.find(s => s.codec_type === 'video');
+        const audioStream = allStreams.find(s => s.codec_type === 'audio');
+        const rawW = videoStream ? (videoStream.width || 0) : 0;
+        const rawH = videoStream ? (videoStream.height || 0) : 0;
+        const rotated = Math.abs(Math.round(streamRotation(videoStream))) % 180 === 90;
+        const duration = parseFloat((info.format && info.format.duration) || 0)
+          || parseFloat((videoStream && videoStream.duration) || 0)
+          || parseFloat((audioStream && audioStream.duration) || 0)
+          || 0;
+        done(null, {
+          duration,
           size: info.format ? parseInt(info.format.size || 0) : 0,
           bitrate: info.format ? parseInt(info.format.bit_rate || 0) : 0,
-          width: videoStream ? videoStream.width : 0,
-          height: videoStream ? videoStream.height : 0,
+          width: rotated ? rawH : rawW,
+          height: rotated ? rawW : rawH,
           codec: videoStream ? videoStream.codec_name : '',
+          pixFmt: videoStream ? (videoStream.pix_fmt || '') : '',
           audioCodec: audioStream ? audioStream.codec_name : '',
           fps: videoStream ? evalFps(videoStream.r_frame_rate) : 0,
         });
       } catch (e) {
-        reject(e);
+        done(e);
       }
     });
-    proc.on('error', reject);
+    proc.on('error', (err) => done(err));
   });
 }
 
@@ -405,79 +471,184 @@ function evalFps(rFrameRate) {
 }
 
 const streams = new Map();
+const castStreams = new Map(); // receiverUrl -> active HLS streamId
 const SEGMENT_DURATION = 6;
+const MIN_TAIL_SEGMENT = 0.5;  // fold trailing <0.5s tail into previous segment
+const PIPELINE_LOOKAHEAD = 20; // keep at most ~2 min transcoded ahead of playback
+const TRANSCODE_CONCURRENCY = Math.max(1, parseInt(process.env.TRANSCODE_CONCURRENCY || '2', 10) || 2);
+const TRANSCODE_TIMEOUT_MS = 45000;
+
+// ─── Priority transcode scheduler ────────────────────────────────────────────
+// Caps concurrent ffmpeg transcodes globally so scrubbing/switching never blows
+// NVENC's concurrent session limit (which falsely triggers software fallback).
+// High priority (on-demand client seeks / init) always runs before background
+// prefetch.
+let transcodeRunning = 0;
+const transcodeHighQ = [];
+const transcodeLowQ = [];
+
+function withTranscodeSlot(highPriority, fn) {
+  return new Promise((resolve) => {
+    const run = () => {
+      transcodeRunning++;
+      Promise.resolve()
+        .then(fn)
+        .then(resolve, () => resolve(false))
+        .finally(() => {
+          transcodeRunning--;
+          const next = transcodeHighQ.shift() || transcodeLowQ.shift();
+          if (next) next();
+        });
+    };
+    if (transcodeRunning < TRANSCODE_CONCURRENCY) run();
+    else if (highPriority) transcodeHighQ.push(run);
+    else transcodeLowQ.push(run);
+  });
+}
+
+/**
+ * Spawn ffmpeg with non-blocking stderr draining (prevents 64 KB pipe buffer
+ * deadlock on noisy/corrupt files), process tracking, and a watchdog timeout.
+ */
+function runFfmpegManaged(args, procs, timeoutMs) {
+  return new Promise((resolve) => {
+    const proc = spawn(FFMPEG, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    procs.add(proc);
+    let stderrTail = '';
+    let settled = false;
+    const finish = (code, errMsg) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      procs.delete(proc);
+      resolve({ code, stderr: errMsg || stderrTail.trim() });
+    };
+    const timer = setTimeout(() => {
+      try { proc.kill('SIGKILL'); } catch {}
+      finish(-1, 'ffmpeg timed out');
+    }, timeoutMs || TRANSCODE_TIMEOUT_MS);
+    if (proc.stderr) {
+      proc.stderr.on('data', (chunk) => {
+        stderrTail += chunk.toString('utf8');
+        if (stderrTail.length > 2048) stderrTail = stderrTail.slice(-2048);
+      });
+    }
+    proc.on('close', (code) => finish(code));
+    proc.on('error', (err) => finish(-1, err.message));
+  });
+}
+
+/** Atomically write `data` to `dest` via a sibling temp file. */
+function atomicWriteFile(dest, data) {
+  const tmp = dest + '.' + process.pid + '.' + Math.random().toString(36).slice(2, 8) + '.tmp';
+  try {
+    fs.writeFileSync(tmp, data);
+    fs.renameSync(tmp, dest);
+    return true;
+  } catch {
+    try { fs.unlinkSync(tmp); } catch {}
+    return false;
+  }
+}
+
+/** Build the segment table, folding a tiny (<0.5s) trailing sliver into the previous segment. */
+function buildSegmentTable(duration, cacheDir, format) {
+  const ext = format === 'fmp4' ? '.m4s' : '.ts';
+  const segs = [];
+  let totalSegs = Math.max(1, Math.ceil(duration / SEGMENT_DURATION));
+  if (totalSegs > 1) {
+    const tail = duration - (totalSegs - 1) * SEGMENT_DURATION;
+    if (tail < MIN_TAIL_SEGMENT) totalSegs--;
+  }
+  for (let i = 0; i < totalSegs; i++) {
+    const startTime = i * SEGMENT_DURATION;
+    const dur = (i === totalSegs - 1)
+      ? Math.max(0.1, duration - startTime)
+      : SEGMENT_DURATION;
+    segs.push({
+      index: i,
+      startTime,
+      duration: dur,
+      cached: false,
+      transcoding: false,
+      path: path.join(cacheDir, 'seg-' + i + ext),
+      outPath: path.join(cacheDir, 'seg-' + i + '.tmp' + ext),
+      queue: [],
+    });
+  }
+  return segs;
+}
 
 class VideoStream {
-  constructor(id, filePath, encOptions) {
+  constructor(id, filePath, encOptions, startSec) {
     this.id = id;
     this.filePath = filePath;
     this.encOptions = encOptions ||
       { codec: 'h264', resolution: 0, quality: 23, speed: 'fast', format: 'fmp4' };
+    this.startSec = Math.max(0, Number(startSec) || 0);
     this.segments = [];
     this.metadata = null;
     this.cleaned = false;
     this.cacheDir = path.join(CACHE_DIR, id);
-    this._pipelineIndex = 0;     // next segment to transcode in background
-    this._pipelineActive = false; // whether background pipeline is running
+    this._activeIndex = 0;        // highest / most recent segment requested by client
+    this._pipelineIndex = 0;      // next segment to transcode in background
+    this._pipelineActive = false; // whether background pipeline loop is running
     this._pipelineTarget = null;  // seek refocus: pipeline jumps here when it can
     this.decodeArgs = [];         // hw decode flags for this stream (set in init)
     this.initPath = path.join(this.cacheDir, 'init.mp4'); // fMP4 init segment
     this._initPromise = null;     // in-flight init generation
+    this._procs = new Set();      // live ffmpeg ChildProcess instances
     fs.mkdirSync(this.cacheDir, { recursive: true });
   }
 
   async init() {
     this.metadata = await getVideoMetadata(this.filePath);
-    // Never upscale: if the requested resolution exceeds the source, keep original
-    if (this.encOptions.resolution > 0 && this.metadata.height &&
-        this.metadata.height <= this.encOptions.resolution) {
+    if (!this.metadata.duration || this.metadata.duration <= 0) {
+      throw new Error('Could not determine video duration');
+    }
+    // Never upscale: compare requested resolution against the video's short edge
+    const shortEdge = (this.metadata.width && this.metadata.height)
+      ? Math.min(this.metadata.width, this.metadata.height)
+      : (this.metadata.height || 0);
+    if (this.encOptions.resolution > 0 && shortEdge && shortEdge <= this.encOptions.resolution) {
       this.encOptions.resolution = 0;
     }
     // Use GPU decoding only for codecs NVDEC supports (others use software decode)
     this.decodeArgs = (DECODE_ARGS.length && NVDEC_CODECS.has(this.metadata.codec))
       ? DECODE_ARGS.slice()
       : [];
-    const totalSegs = Math.ceil(this.metadata.duration / SEGMENT_DURATION);
-    const ext = this.encOptions.format === 'fmp4' ? '.m4s' : '.ts';
-    for (let i = 0; i < totalSegs; i++) {
-      const startTime = i * SEGMENT_DURATION;
-      const dur = Math.min(SEGMENT_DURATION, this.metadata.duration - startTime);
-      this.segments.push({
-        index: i,
-        startTime,
-        duration: dur,
-        cached: false,
-        transcoding: false,
-        path: path.join(this.cacheDir, 'seg-' + i + ext),
-        queue: []  // waiters for this segment
-      });
-    }
-    // Immediately start the first 3 segments in parallel
-    if (this.segments[0]) this._startTranscode(0);
-    if (this.segments[1]) this._startTranscode(1);
-    if (this.segments[2]) this._startTranscode(2);
-    // Then start background pipeline
-    this._pipelineIndex = 3;
-    this._pipelineActive = true;
-    setImmediate(() => this._runPipeline());
+    this.segments = buildSegmentTable(this.metadata.duration, this.cacheDir, this.encOptions.format);
+
+    // Start pre-transcoding right at the resume/start timestamp instead of
+    // wasting GPU time on segment 0 when resuming mid-video.
+    const startIdx = Math.min(
+      this.segments.length - 1,
+      Math.max(0, Math.floor(this.startSec / SEGMENT_DURATION))
+    );
+    this._activeIndex = startIdx;
+    if (this.segments[startIdx]) this._startTranscode(startIdx, true);
+    if (this.segments[startIdx + 1]) this._startTranscode(startIdx + 1, true);
+    this._pipelineIndex = startIdx + 2;
+    this._kickPipeline();
   }
 
   getPlaylist() {
-    if (!this.metadata) return null;
-    const lines = [];
-    lines.push('#EXTM3U');
-    lines.push('#EXT-X-VERSION:3');
-    lines.push('#EXT-X-PLAYLIST-TYPE:VOD');
-    lines.push('#EXT-X-TARGETDURATION:' + Math.ceil(SEGMENT_DURATION));
-    lines.push('#EXT-X-MEDIA-SEQUENCE:0');
-    lines.push('#EXT-X-INDEPENDENT-SEGMENTS');
-    if (this.encOptions.format === 'fmp4') {
-      lines.push('#EXT-X-MAP:URI="init.mp4"');
-    }
-    for (let i = 0; i < this.segments.length; i++) {
-      const seg = this.segments[i];
+    if (!this.metadata || !this.segments.length) return null;
+    const isFmp4 = this.encOptions.format === 'fmp4';
+    const maxDur = this.segments.reduce((m, s) => Math.max(m, s.duration), SEGMENT_DURATION);
+    const lines = [
+      '#EXTM3U',
+      // RFC 8216: EXT-X-MAP with fMP4 segments requires version >= 7
+      '#EXT-X-VERSION:' + (isFmp4 ? 7 : 3),
+      '#EXT-X-PLAYLIST-TYPE:VOD',
+      '#EXT-X-TARGETDURATION:' + Math.ceil(maxDur),
+      '#EXT-X-MEDIA-SEQUENCE:0',
+      '#EXT-X-INDEPENDENT-SEGMENTS',
+    ];
+    if (isFmp4) lines.push('#EXT-X-MAP:URI="init.mp4"');
+    const ext = isFmp4 ? '.m4s' : '.ts';
+    for (const seg of this.segments) {
       lines.push('#EXTINF:' + seg.duration.toFixed(3) + ',');
-      const ext = this.encOptions.format === 'fmp4' ? '.m4s' : '.ts';
       lines.push('segment-' + seg.index + ext);
     }
     lines.push('#EXT-X-ENDLIST');
@@ -485,45 +656,42 @@ class VideoStream {
   }
 
   /**
-   * Start transcoding a segment if not already cached/transcoding.
-   * Returns a promise that resolves when the segment is cached.
+   * Ensure a client-requested segment is transcoded (high priority).
+   * Advances the lookahead window and wakes the background pipeline.
    */
   ensureSegment(index) {
-    if (index < 0 || index >= this.segments.length) return Promise.resolve(false);
+    if (this.cleaned || index < 0 || index >= this.segments.length) return Promise.resolve(false);
     const seg = this.segments[index];
-    // The player just seeked here — refocus the background pipeline so it
-    // stops grinding old segments and refills from the new position instead
-    if (!seg.cached && !seg.transcoding && Math.abs(index - this._pipelineIndex) > 2) {
-      this._pipelineTarget = index + 3;
+    const jumped = Math.abs(index - this._activeIndex) > 3;
+    this._activeIndex = index;
+    if (jumped || Math.abs(index - this._pipelineIndex) > 3) {
+      this._pipelineTarget = index + 1;
     }
+    this._kickPipeline();
     if (seg.cached) return Promise.resolve(true);
     if (seg.transcoding) {
-      // Already being transcoded — queue our callback
-      return new Promise((resolve) => {
-        seg.queue.push(resolve);
-      });
+      return new Promise((resolve) => { seg.queue.push(resolve); });
     }
-    // Not started yet — start it now (on-demand / seek)
-    return this._startTranscode(index);
+    return this._startTranscode(index, true);
   }
 
   /**
-   * fMP4 media segments must start at their first 'moof' box, but ffmpeg with
-   * '+empty_moov' writes a complete ftyp+moov header at the start of every
-   * segment file. Appending those to MSE resets the decoder mid-stream and
-   * corrupts reference frames, so strip the leading header — clients use the
-   * EXT-X-MAP init segment instead.
-   *
-   * Additionally, ffmpeg's mp4 muxer writes tfdt (baseMediaDecodeTime)
-   * relative to the file — every segment would claim to start at t=0 and
-   * each MSE append would overlap the previous one (visible as corrupted
-   * blocks). Rewrite each track's tfdt to the segment's absolute start time,
-   * preserving the internal fragment deltas.
+   * Strip leading ftyp+moov (caching it to init.mp4 if not yet present),
+   * rewrite tfdt to the segment's absolute start time, and atomically move
+   * the finalized media segment into place. Returns true on success.
    */
-  finalizeFmp4Segment(file, startSec) {
+  finalizeFmp4Segment(tmpFile, finalFile, startSec) {
     try {
-      const buf = fs.readFileSync(file);
+      const buf = fs.readFileSync(tmpFile);
       const top = walkBoxes(buf, 0, buf.length);
+      const firstMoof = top.find(b => b.type === 'moof');
+      if (!firstMoof) return false;
+
+      // Reuse the embedded ftyp+moov as init.mp4 (guarantees matching codec
+      // config & timescale and avoids spawning an extra ffmpeg probe).
+      if (firstMoof.start > 0 && !fs.existsSync(this.initPath)) {
+        atomicWriteFile(this.initPath, buf.subarray(0, firstMoof.start));
+      }
 
       // Track map from the embedded moov: track_ID -> timescale
       const timescales = {};
@@ -537,7 +705,6 @@ class VideoStream {
           if (!tkhd || !mdia) continue;
           const mdhd = walkBoxes(buf, mdia.bodyStart, mdia.bodyEnd).find(b => b.type === 'mdhd');
           if (!mdhd) continue;
-          // tkhd body: version+flags(4), creation+modification(v0:8 / v1:16), track_ID
           const trackId = buf.readUInt32BE(tkhd.bodyStart + 4 + (buf[tkhd.bodyStart] === 1 ? 16 : 8));
           const ver = buf[mdhd.bodyStart];
           const ts = buf.readUInt32BE(mdhd.bodyStart + 4 + (ver === 1 ? 16 : 8));
@@ -545,10 +712,11 @@ class VideoStream {
         }
       }
 
-      // First-pass: collect first tfdt per track
+      const moofs = top.filter(b => b.type === 'moof');
       const firstTfdt = {};
-      for (const moof of top.filter(b => b.type === 'moof')) {
-        for (const traf of walkBoxes(buf, moof.bodyStart, moof.bodyEnd).filter(b => b.type === 'traf')) {
+      for (const moof of moofs) {
+        for (const traf of walkBoxes(buf, moof.bodyStart, moof.bodyEnd)) {
+          if (traf.type !== 'traf') continue;
           const boxes = walkBoxes(buf, traf.bodyStart, traf.bodyEnd);
           const tfhd = boxes.find(b => b.type === 'tfhd');
           const tfdt = boxes.find(b => b.type === 'tfdt');
@@ -563,10 +731,9 @@ class VideoStream {
         }
       }
 
-      // Second-pass: patch tfdt values (handles version 0 and 1)
-      const firstMoof = top.find(b => b.type === 'moof');
-      for (const moof of top.filter(b => b.type === 'moof')) {
-        for (const traf of walkBoxes(buf, moof.bodyStart, moof.bodyEnd).filter(b => b.type === 'traf')) {
+      for (const moof of moofs) {
+        for (const traf of walkBoxes(buf, moof.bodyStart, moof.bodyEnd)) {
+          if (traf.type !== 'traf') continue;
           const boxes = walkBoxes(buf, traf.bodyStart, traf.bodyEnd);
           const tfhd = boxes.find(b => b.type === 'tfhd');
           const tfdt = boxes.find(b => b.type === 'tfdt');
@@ -579,7 +746,7 @@ class VideoStream {
             ? Number(buf.readBigUInt64BE(tfdt.bodyStart + 4))
             : buf.readUInt32BE(tfdt.bodyStart + 4);
           const shift = Math.round(startSec * ts) - firstTfdt[trackId];
-          const next = cur + shift;
+          const next = Math.max(0, cur + shift);
           if (ver === 1) {
             buf.writeBigUInt64BE(BigInt(next), tfdt.bodyStart + 4);
           } else if (next <= 0xffffffff) {
@@ -588,140 +755,203 @@ class VideoStream {
         }
       }
 
-      // Trim leading ftyp+moov: media segments start at the first moof
-      if (firstMoof && firstMoof.start > 0) {
-        fs.writeFileSync(file, buf.slice(firstMoof.start));
-      }
+      const written = atomicWriteFile(finalFile, buf.subarray(firstMoof.start));
+      try { fs.unlinkSync(tmpFile); } catch {}
+      return written;
     } catch (e) {
-      console.error('[finalize] failed for ' + file + ':', e.message);
+      console.error('[finalize] failed for ' + finalFile + ':', e.message);
+      try { fs.unlinkSync(tmpFile); } catch {}
+      return false;
     }
   }
 
   /**
-   * fMP4 init segment (codec headers only). Generated by encoding a short
-   * probe with identical settings, then truncating the file at its first
-   * 'moof' box so only ftyp+moov remain (a pure init segment).
+   * fMP4 init segment (codec headers only). Usually populated for free by the
+   * first finalized media segment; if requested before any segment finishes,
+   * encodes a single-frame probe (with software-decode fallback).
    */
   _ensureInit() {
-    if (this._initPromise) return this._initPromise;
+    if (this.cleaned) return Promise.resolve(false);
     if (fs.existsSync(this.initPath)) return Promise.resolve(true);
-    this._initPromise = new Promise((resolve) => {
+    if (this._initPromise) return this._initPromise;
+    this._initPromise = withTranscodeSlot(true, async () => {
+      if (this.cleaned) return false;
+      if (fs.existsSync(this.initPath)) return true;
       const probe = path.join(this.cacheDir, 'probe.mp4');
-      const args = buildTranscodeArgs(
-        { startTime: 0, duration: 0.3, path: probe },
-        this.filePath, this.decodeArgs, this.encOptions
-      );
-      const proc = spawn(FFMPEG, args);
-      proc.on('close', (code) => {
-        this._initPromise = null;
-        try {
-          if (code !== 0 || !fs.existsSync(probe)) return resolve(false);
-          const buf = fs.readFileSync(probe);
-          // Walk top-level MP4 boxes; init = everything before the first moof
-          let off = 0;
-          let cut = -1;
-          while (off + 8 <= buf.length) {
-            const size = buf.readUInt32BE(off);
-            const type = buf.toString('ascii', off + 4, off + 8);
-            if (type === 'moof') { cut = off; break; }
-            if (size < 8) break;
-            off += size;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (this.cleaned) return false;
+        const usedHw = this.decodeArgs.length > 0;
+        const args = buildTranscodeArgs(
+          { startTime: 0, duration: 1, outPath: probe },
+          this.filePath, this.decodeArgs, this.encOptions, this.metadata,
+          { probeOnly: true }
+        );
+        const { code } = await runFfmpegManaged(args, this._procs, 20000);
+        if (code === 0 && fs.existsSync(probe)) {
+          try {
+            const buf = fs.readFileSync(probe);
+            const firstMoof = walkBoxes(buf, 0, buf.length).find(b => b.type === 'moof');
+            try { fs.unlinkSync(probe); } catch {}
+            if (firstMoof && firstMoof.start > 0) {
+              return atomicWriteFile(this.initPath, buf.subarray(0, firstMoof.start));
+            }
+          } catch {
+            try { fs.unlinkSync(probe); } catch {}
           }
-          if (cut <= 0) return resolve(false);
-          fs.writeFileSync(this.initPath, buf.slice(0, cut));
-          fs.unlinkSync(probe);
-          resolve(true);
-        } catch {
-          resolve(false);
+        } else {
+          try { fs.unlinkSync(probe); } catch {}
         }
-      });
-      proc.on('error', () => resolve(false));
-    });
+        if (usedHw && !this.cleaned) {
+          this.decodeArgs = [];
+          console.warn('Hardware decode failed on init probe for "' +
+            path.basename(this.filePath) + '", retrying with software decoding');
+          continue;
+        }
+        break;
+      }
+      return fs.existsSync(this.initPath);
+    }).finally(() => { this._initPromise = null; });
     return this._initPromise;
   }
 
-  /** Internal: launch ffmpeg for a segment, notify all waiters on completion */
-  _startTranscode(index) {
-    return new Promise((resolve) => {
-      const seg = this.segments[index];
-      if (!seg) return resolve(false);
-      if (seg.cached) return resolve(true);
-      if (seg.transcoding) {
-        seg.queue.push(resolve);
-        return;
-      }
-      seg.transcoding = true;
-      // Remember whether this attempt used hardware decode, so the fallback
-      // below triggers per-segment even when several segments fail at once
-      seg.usedHwDecode = this.decodeArgs.length > 0;
-      const args = buildTranscodeArgs(seg, this.filePath, this.decodeArgs, this.encOptions);
-      const proc = spawn(FFMPEG, args);
-      proc.on('close', (code) => {
-        seg.transcoding = false;
-        const ok = (code === 0 && fs.existsSync(seg.path) && fs.statSync(seg.path).size > 0);
-        if (ok) {
-          seg.cached = true;
-          if (this.encOptions.format === 'fmp4') this.finalizeFmp4Segment(seg.path, seg.startTime);
-          const waiters = seg.queue;
-          seg.queue = [];
-          for (const fn of waiters) fn(true);
-          resolve(true);
-          return;
-        }
-        try { fs.unlinkSync(seg.path); } catch {}
-        // This segment was attempted with hardware decode and failed —
-        // disable hw decoding for the whole stream and retry this segment
-        // once with software decoding. Waiters stay queued and are notified
-        // when the retry completes.
-        if (seg.usedHwDecode) {
-          seg.usedHwDecode = false;
-          this.decodeArgs = [];
-          console.warn('Hardware decode failed for "' + path.basename(this.filePath) +
-            '", falling back to software decoding');
-          this._startTranscode(index).then((ok2) => resolve(ok2));
-          return;
-        }
-        const waiters = seg.queue;
-        seg.queue = [];
-        for (const fn of waiters) fn(false);
-        resolve(false);
-      });
-      proc.on('error', () => {
-        seg.transcoding = false;
-        const waiters = seg.queue;
-        seg.queue = [];
-        for (const fn of waiters) fn(false);
-        resolve(false);
-      });
-    });
+  /** Notify and drain all promises waiting on `seg`. */
+  _notifyWaiters(seg, ok) {
+    const waiters = seg.queue;
+    seg.queue = [];
+    for (const fn of waiters) fn(ok);
   }
 
-  /** Background pipeline: keep transcoding segments ahead of playback */
+  /** Internal: launch ffmpeg for a segment through the priority pool. */
+  _startTranscode(index, highPriority) {
+    const seg = this.segments[index];
+    if (!seg || this.cleaned) return Promise.resolve(false);
+    if (seg.cached) return Promise.resolve(true);
+    if (seg.transcoding) {
+      return new Promise((resolve) => { seg.queue.push(resolve); });
+    }
+    seg.transcoding = true;
+
+    const run = async () => {
+      if (this.cleaned) {
+        seg.transcoding = false;
+        this._notifyWaiters(seg, false);
+        return false;
+      }
+      const usedHw = this.decodeArgs.length > 0;
+      const args = buildTranscodeArgs(seg, this.filePath, this.decodeArgs, this.encOptions, this.metadata);
+      const { code, stderr } = await runFfmpegManaged(args, this._procs, TRANSCODE_TIMEOUT_MS);
+      if (this.cleaned) {
+        try { fs.unlinkSync(seg.outPath); } catch {}
+        seg.transcoding = false;
+        this._notifyWaiters(seg, false);
+        return false;
+      }
+
+      let ok = (code === 0 && fs.existsSync(seg.outPath) && fs.statSync(seg.outPath).size > 0);
+      if (ok) {
+        if (this.encOptions.format === 'fmp4') {
+          ok = this.finalizeFmp4Segment(seg.outPath, seg.path, seg.startTime);
+        } else {
+          try { fs.renameSync(seg.outPath, seg.path); } catch { ok = false; }
+        }
+      }
+
+      if (ok) {
+        seg.cached = true;
+        seg.transcoding = false;
+        this._notifyWaiters(seg, true);
+        return true;
+      }
+
+      try { fs.unlinkSync(seg.outPath); } catch {}
+      try { fs.unlinkSync(seg.path); } catch {}
+
+      // Hardware decode failed — disable for the stream and retry once on CPU
+      if (usedHw && !this.cleaned) {
+        this.decodeArgs = [];
+        console.warn('Hardware decode failed for "' + path.basename(this.filePath) +
+          '", falling back to software decoding');
+        const retryArgs = buildTranscodeArgs(seg, this.filePath, [], this.encOptions, this.metadata);
+        const retry = await runFfmpegManaged(retryArgs, this._procs, TRANSCODE_TIMEOUT_MS);
+        let ok2 = !this.cleaned && retry.code === 0 &&
+          fs.existsSync(seg.outPath) && fs.statSync(seg.outPath).size > 0;
+        if (ok2) {
+          if (this.encOptions.format === 'fmp4') {
+            ok2 = this.finalizeFmp4Segment(seg.outPath, seg.path, seg.startTime);
+          } else {
+            try { fs.renameSync(seg.outPath, seg.path); } catch { ok2 = false; }
+          }
+        }
+        if (ok2) {
+          seg.cached = true;
+          seg.transcoding = false;
+          this._notifyWaiters(seg, true);
+          return true;
+        }
+        try { fs.unlinkSync(seg.outPath); } catch {}
+        try { fs.unlinkSync(seg.path); } catch {}
+        if (retry.stderr) console.error('[transcode seg ' + index + '] ' + retry.stderr.split('\n').pop());
+      } else if (stderr) {
+        console.error('[transcode seg ' + index + '] ' + stderr.split('\n').pop());
+      }
+
+      seg.transcoding = false;
+      this._notifyWaiters(seg, false);
+      return false;
+    };
+
+    return withTranscodeSlot(!!highPriority, run);
+  }
+
+  /** Start/wake the background lookahead pipeline if not already running. */
+  _kickPipeline() {
+    if (this.cleaned || this._pipelineActive) return;
+    this._pipelineActive = true;
+    setImmediate(() => this._runPipeline());
+  }
+
+  /**
+   * Background pipeline: pre-transcode up to PIPELINE_LOOKAHEAD segments ahead
+   * of `_activeIndex`. Pauses automatically when the window is full so paused
+   * videos never burn GPU or fill /tmp, and resumes when playback advances.
+   */
   async _runPipeline() {
-    if (!this._pipelineActive) return;
-    // A seek happened while we were busy — jump to the new playback position
-    if (this._pipelineTarget != null && this._pipelineTarget !== this._pipelineIndex) {
+    if (this.cleaned || !this._pipelineActive) return;
+    if (this._pipelineTarget != null) {
       this._pipelineIndex = this._pipelineTarget;
       this._pipelineTarget = null;
     }
-    if (this._pipelineIndex >= this.segments.length) {
+    const windowEnd = Math.min(this.segments.length, this._activeIndex + PIPELINE_LOOKAHEAD);
+    while (this._pipelineIndex < windowEnd) {
+      const seg = this.segments[this._pipelineIndex];
+      if (!seg.cached && !seg.transcoding) break;
+      this._pipelineIndex++;
+    }
+    if (this._pipelineIndex >= windowEnd) {
       this._pipelineActive = false;
       return;
     }
     const idx = this._pipelineIndex;
-    const seg = this.segments[idx];
-    // If this segment is already cached or being transcoded (e.g. user skipped to it), skip it
-    if (!seg.cached && !seg.transcoding) {
-      await this._startTranscode(idx);
-    }
     this._pipelineIndex++;
-    setImmediate(() => this._runPipeline());
+    await this._startTranscode(idx, false);
+    if (!this.cleaned && this._pipelineActive) {
+      setImmediate(() => this._runPipeline());
+    }
   }
 
   cleanup() {
     if (this.cleaned) return;
     this.cleaned = true;
     this._pipelineActive = false;
+    clearTimeout(this.cleanupTimer);
+    for (const proc of this._procs) {
+      try { proc.kill('SIGKILL'); } catch {}
+    }
+    this._procs.clear();
+    for (const seg of this.segments) {
+      seg.transcoding = false;
+      this._notifyWaiters(seg, false);
+    }
     try {
       fs.rmSync(this.cacheDir, { recursive: true, force: true });
     } catch {}
@@ -1086,6 +1316,8 @@ app.get('/api/video/stream/start', async (req, res) => {
       width: stream.metadata.width,
       height: stream.metadata.height,
       codec: stream.metadata.codec,
+      activeCodec: stream.encOptions.codec,
+      resolution: stream.encOptions.resolution,
       fps: stream.metadata.fps,
       segments: stream.segments.length,
       playlistUrl: '/api/video/stream/' + stream.id + '/playlist.m3u8'
@@ -1098,12 +1330,27 @@ app.get('/api/video/stream/start', async (req, res) => {
 /** Create a transcoding session for a file (shared by player + cast flows). */
 async function startStreamSession(sp, query) {
   const id = crypto.randomUUID().replace(/-/g, '').slice(0, 12);
-  const encOptions = parseEncOptions(query);
-  const stream = new VideoStream(id, sp, encOptions);
-  await stream.init();
+  const encOptions = parseEncOptions(query || {});
+  const startSec = parseFloat(query && query.start) || 0;
+  const stream = new VideoStream(id, sp, encOptions, startSec);
+  try {
+    await stream.init();
+  } catch (err) {
+    stream.cleanup();
+    throw err;
+  }
   streams.set(id, stream);
   touchStream(id);
   return stream;
+}
+
+/** Destroy a stream session immediately, killing its ffmpeg processes and deleting temp files. */
+function destroyStream(streamId) {
+  const cur = streams.get(streamId);
+  if (!cur) return false;
+  streams.delete(streamId);
+  cur.cleanup();
+  return true;
 }
 
 /** Reset the idle-expiry timer for a stream session (client is active). */
@@ -1111,11 +1358,17 @@ function touchStream(streamId) {
   const s = streams.get(streamId);
   if (!s) return;
   clearTimeout(s.cleanupTimer);
-  s.cleanupTimer = setTimeout(() => {
-    const cur = streams.get(streamId);
-    if (cur) { cur.cleanup(); streams.delete(streamId); }
-  }, 5 * 60 * 1000);
+  s.cleanupTimer = setTimeout(() => destroyStream(streamId), 5 * 60 * 1000);
 }
+
+app.delete('/api/video/stream/:id', (req, res) => {
+  res.json({ ok: destroyStream(req.params.id) });
+});
+
+// POST variant so browsers can tear down sessions via navigator.sendBeacon() on tab close
+app.post('/api/video/stream/:id/stop', (req, res) => {
+  res.json({ ok: destroyStream(req.params.id) });
+});
 
 app.get('/api/video/stream/:id/playlist.m3u8', (req, res) => {
   const stream = streams.get(req.params.id);
@@ -1148,8 +1401,10 @@ async function serveSegment(req, res) {
 }
 
 async function serveStreamSegment(stream, index, res) {
+  if (stream.cleaned) return res.status(404).json({ error: 'Stream closed' });
   touchStream(stream.id); // client is actively fetching — keep session alive
   const ok = await stream.ensureSegment(index);
+  if (stream.cleaned || res.writableEnded) return;
   if (!ok) return res.status(500).json({ error: 'Failed to transcode segment' });
   const segPath = stream.segments[index] ? stream.segments[index].path : null;
   if (!segPath || !fs.existsSync(segPath)) {
@@ -1160,19 +1415,26 @@ async function serveStreamSegment(stream, index, res) {
     'Cache-Control': 'public, max-age=3600',
     'Access-Control-Allow-Origin': '*'
   });
-  fs.createReadStream(segPath).pipe(res);
+  res.sendFile(segPath, (err) => {
+    if (err && !res.headersSent) res.status(404).end();
+  });
 }
 
 async function serveStreamInit(stream, res) {
+  if (stream.cleaned) return res.status(404).json({ error: 'Stream closed' });
   if (stream.encOptions.format !== 'fmp4') return res.status(404).json({ error: 'Not an fMP4 stream' });
+  touchStream(stream.id);
   const ok = await stream._ensureInit();
+  if (stream.cleaned || res.writableEnded) return;
   if (!ok || !fs.existsSync(stream.initPath)) return res.status(500).json({ error: 'Failed to generate init segment' });
   res.set({
     'Content-Type': 'video/mp4',
     'Cache-Control': 'public, max-age=3600',
     'Access-Control-Allow-Origin': '*'
   });
-  fs.createReadStream(stream.initPath).pipe(res);
+  res.sendFile(stream.initPath, (err) => {
+    if (err && !res.headersSent) res.status(404).end();
+  });
 }
 
 app.get('/api/video/stream/:id/status', (req, res) => {
@@ -1327,7 +1589,8 @@ async function decideRemoteCast(sp) {
   if (!CAST_DIRECT_EXT.has(ext) || !FFPROBE) return 'hls';
   try {
     const meta = await getVideoMetadata(sp);
-    const okVideo = CAST_DIRECT_VIDEO.has(meta.codec);
+    const okVideo = CAST_DIRECT_VIDEO.has(meta.codec)
+      && (meta.codec !== 'h264' || !meta.pixFmt || /^yuvj?420p$/.test(meta.pixFmt));
     const okAudio = !meta.audioCodec || CAST_DIRECT_AUDIO.has(meta.audioCodec);
     if (okVideo && okAudio) return 'raw';
   } catch { /* fall through to transcode */ }
@@ -1395,12 +1658,14 @@ app.post('/api/castor/cast', async (req, res) => {
   let backend;
 
   let castBody;
+  let createdStreamId = null;
   if (mode === 'local') {
     // Same-host receiver: hand it the file path as it exists on the host.
     castBody = { module: 'local', target: path.resolve('/' + body.path).replace(/^([a-zA-Z]:)/, '$1'), autoplay: true, title };
     backend = 'local-file';
   } else {
-    const decision = await decideRemoteCast(sp);
+    const wantsTranscode = Boolean(body.res && body.res !== 'orig');
+    const decision = wantsTranscode ? 'hls' : await decideRemoteCast(sp);
     backend = decision === 'hls' ? 'hls-transcode' : 'direct-file';
     const base = req.protocol + '://' + (req.get('host') || 'localhost');
     const namePart = encodeURIComponent(title);
@@ -1415,7 +1680,14 @@ app.post('/api/castor/cast', async (req, res) => {
       if (!FFMPEG || !FFPROBE) return res.status(500).json({ error: 'ffmpeg/ffprobe not found — remote transcoding unavailable' });
       let stream;
       try {
-        stream = await startStreamSession(sp, {});
+        stream = await startStreamSession(sp, {
+          res: body.res,
+          cq: body.cq,
+          speed: body.speed,
+          codec: body.codec,
+          start: body.start,
+        });
+        createdStreamId = stream.id;
       } catch (err) {
         return res.status(500).json({ error: 'Transcode failed to start: ' + err.message });
       }
@@ -1437,12 +1709,19 @@ app.post('/api/castor/cast', async (req, res) => {
       signal: AbortSignal.timeout(20000),
     });
   } catch (err) {
+    if (createdStreamId) destroyStream(createdStreamId);
     return res.status(502).json({ error: 'Receiver unreachable: ' + err.message });
   }
   const data = await rr.json().catch(() => ({}));
   if (!rr.ok) {
+    if (createdStreamId) destroyStream(createdStreamId);
     return res.status(502).json({ error: data.error || 'Receiver rejected the cast (HTTP ' + rr.status + ')', code: data.code });
   }
+  // Clean up any previous HLS session that was feeding this receiver
+  const prevCastStream = castStreams.get(receiver.url);
+  if (prevCastStream && prevCastStream !== createdStreamId) destroyStream(prevCastStream);
+  if (createdStreamId) castStreams.set(receiver.url, createdStreamId);
+  else castStreams.delete(receiver.url);
   res.json({
     ok: true,
     mode,
@@ -1678,6 +1957,12 @@ app.put('/api/video/tags', (req, res) => {
   }
   res.json({ ok: true, tags: kept, rating });
 });
+
+function cleanupAllStreams() {
+  for (const id of Array.from(streams.keys())) destroyStream(id);
+}
+process.once('SIGINT', () => { cleanupAllStreams(); process.exit(0); });
+process.once('SIGTERM', () => { cleanupAllStreams(); process.exit(0); });
 
 app.listen(PORT, () => {
   console.log('Server running on http://localhost:' + PORT);

@@ -914,3 +914,69 @@ its component integrations (`FileManager.js`, `Home.js`, `VideoPlayer.js`,
   `.vcontrols` (prev → play → next → vol → mute → quality → loop → fullscreen
   and back, plus Up → seek); all 142 checks across 5 suites pass and LSP is
   clean.
+
+----
+
+## 2026-11-16 — Live transcoding reliability, compatibility & performance audit
+
+Audited and hardened the full HLS transcoding stack across `server.js`,
+`public/js/components/VideoPlayer.js`, and `public/js/castStore.js`:
+
+- **Stability & resource lifecycle (`server.js`)**:
+  - `runFfmpegManaged()` drains `stderr` into a capped 2 KB tail buffer and
+    enforces a 45 s watchdog timeout, eliminating the 64 KB pipe-buffer
+    deadlock that previously hung ffmpeg indefinitely on noisy/corrupt files.
+  - Global priority concurrency scheduler (`withTranscodeSlot`, default 2
+    concurrent runs via `TRANSCODE_CONCURRENCY`): on-demand/seek/init jobs
+    always preempt background prefetch, preventing NVENC session exhaustion
+    and spurious fallbacks to software decoding.
+  - `VideoStream` tracks live child processes (`this._procs`) and kills them
+    on `cleanup()`, resolving pending waiters with `false` so no HTTP request
+    hangs. New `DELETE /api/video/stream/:id` and `POST /api/video/stream/:id/stop`
+    (for `sendBeacon`) endpoints tear down sessions immediately on navigation,
+    quality change, or tab close. Stale `CACHE_DIR` subdirectories are cleared
+    on startup, and `SIGINT`/`SIGTERM` clean up all active sessions.
+  - Bounded lookahead pipeline (`PIPELINE_LOOKAHEAD = 20` segments ≈ 2 min):
+    pauses when the window ahead of `_activeIndex` is full (stopping paused
+    movies from pegging GPU / filling `/tmp` tmpfs) and restarts automatically
+    when playback advances or seeks.
+- **Media compatibility & fMP4 correctness (`server.js`)**:
+  - Explicit `-map 0:v:0 -map 0:a:0? -sn -dn` so embedded subtitles, data
+    streams, and attached cover art no longer crash `-f mp4` muxing, and
+    silent videos transcode cleanly.
+  - `-pix_fmt yuv420p` + explicit H.264 `high` / HEVC `main` profiles fix
+    10-bit (`yuv420p10le`), 4:2:2, and 4:4:4 sources; `-ac 2 -ar 48000`
+    downmixes 5.1/7.1 surround audio to MSE-safe stereo AAC.
+  - Short-edge scaling (portrait `1080×1920` at 720p → `720×1280` instead of
+    `406×720`), odd-dimension rounding (`scale=trunc(iw/2)*2:trunc(ih/2)*2`),
+    and rotation-aware `getVideoMetadata()` (ignoring `attached_pic`, adding
+    `pixFmt` + duration fallbacks + 15 s timeout).
+  - Fixed `-video_track_timescale 90000` guarantees `init.mp4` and every
+    segment share the same timescale and avoids 32-bit `tfdt` overflow.
+  - Atomic `finalizeFmp4Segment()` writes to a temp file and renames only
+    after box stripping + clamped `tfdt` patching succeed (eliminating the
+    race where `seg.cached = true` exposed unfinalized files), and caches
+    `ftyp+moov` to `init.mp4` for free. `_ensureInit()` uses a 1-frame probe
+    with `walkBoxes()` and software-decode fallback.
+  - Tiny trailing tails (`< 0.5 s`) fold into the previous segment (`buildSegmentTable`),
+    preventing 0-frame EOF segment errors; fMP4 playlists emit
+    `#EXT-X-VERSION:7` and dynamic `TARGETDURATION`; segments/init are served
+    via `res.sendFile()` (proper `Content-Length`, safe error/abort handling).
+- **Client & cast fixes (`VideoPlayer.js`, `castStore.js`)**:
+  - `VideoPlayer` sends `?start=<resumeSeconds>` to `/api/video/stream/start`
+    and sets `hls.js` `startPosition`, eliminating wasted segment 0–2 transcoding
+    on resume/quality switch.
+  - `_startSeq` generation guard prevents rapid prev/next switches from
+    attaching stale streams; tracked `_onLoaded` is cleaned up on teardown;
+    duplicate event listeners removed; `pagehide` & `cleanup()` tear down the
+    server stream; HTTP 404 on expired sessions triggers immediate recovery
+    instead of 30 s of retries; `activeCodec` uses the server's actual codec;
+    `canDirectPlay()` allows silent videos and `vp8` while rejecting 10-bit
+    H.264.
+  - `CastStore.cast()` now forwards `res`/`cq`/`speed`/`codec` to
+    `/api/castor/cast`, and `server.js` tears down replaced or failed cast
+    transcode sessions.
+- Verified end-to-end against a live server with real ffmpeg + ffprobe
+  (`transcode-test.mjs`: 26/26 checks across 10-bit+5.1+SRT MKV, odd-dim
+  silent yuv444p MKV, portrait 1080×1920, 12.15 s tiny tail, `?start=12`
+  resume, sample MP4, and DELETE/stop cleanup) plus 96 frontend checks.

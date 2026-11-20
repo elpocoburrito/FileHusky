@@ -159,12 +159,17 @@ const CastStore = (function () {
       throw new Error('No receiver selected');
     }
     const modeVal = mode || receiver.mode || 'remote';
+    const s = SettingsStore.settings;
     const body = {
       path,
       mode: modeVal,
       receiverId: receiver.id != null && receiver.id !== '' ? receiver.id : undefined,
       receiverUrl: receiver.id != null && receiver.id !== '' ? undefined : receiver.url,
       receiverName: receiver.name,
+      res: s.videoResolution,
+      cq: s.videoQuality,
+      speed: s.encodeSpeed,
+      codec: s.videoCodec === 'auto' ? 'h264' : s.videoCodec,
     };
     const res = await Utils.api('/api/castor/cast', { method: 'POST', body });
 

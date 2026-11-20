@@ -2,8 +2,8 @@
 
 /* global Vue, Utils, SettingsStore, Hls, CastStore, TvMode */
 
-const VIDEO_EXT_DIRECT = new Set(['.mp4', '.m4v', '.mov', '.webm', '.m4v']);
-const DIRECT_VIDEO_CODECS = new Set(['h264', 'vp9', 'av1']);
+const VIDEO_EXT_DIRECT = new Set(['.mp4', '.m4v', '.mov', '.webm']);
+const DIRECT_VIDEO_CODECS = new Set(['h264', 'vp8', 'vp9', 'av1']);
 const DIRECT_AUDIO_CODECS = new Set(['aac', 'mp3', 'opus', 'vorbis', 'flac']);
 
 // HEVC decode capability: MSE (hls.js path) or native HLS (Safari/iOS).
@@ -168,9 +168,10 @@ const VideoPlayer = {
     canDirectPlay() {
       if (!this.meta) return false;
       const ext = this.path.slice(this.path.lastIndexOf('.')).toLowerCase();
-      return VIDEO_EXT_DIRECT.has(ext) &&
-        DIRECT_VIDEO_CODECS.has(this.meta.codec) &&
-        DIRECT_AUDIO_CODECS.has(this.meta.audioCodec);
+      const okVideo = DIRECT_VIDEO_CODECS.has(this.meta.codec) &&
+        (this.meta.codec !== 'h264' || !this.meta.pixFmt || /^yuvj?420p$/.test(this.meta.pixFmt));
+      const okAudio = !this.meta.audioCodec || DIRECT_AUDIO_CODECS.has(this.meta.audioCodec);
+      return VIDEO_EXT_DIRECT.has(ext) && okVideo && okAudio;
     },
 
     useDirect() {
@@ -277,6 +278,7 @@ const VideoPlayer = {
     document.addEventListener('tv-back', this.onTvBack);
     document.addEventListener('fullscreenchange', this.onFullscreenChange);
     document.addEventListener('orientationchange', this.onOrientationChange);
+    window.addEventListener('pagehide', this.onPageHide);
     this.onOrientationChange();
     this.startClock();
     await this.start();
@@ -285,11 +287,13 @@ const VideoPlayer = {
   },
 
   beforeUnmount() {
+    this._startSeq = (this._startSeq || 0) + 1; // invalidate any in-flight start()
     document.removeEventListener('keydown', this.onKey);
     document.removeEventListener('focusin', this.onTvFocusIn);
     document.removeEventListener('tv-back', this.onTvBack);
     document.removeEventListener('fullscreenchange', this.onFullscreenChange);
     document.removeEventListener('orientationchange', this.onOrientationChange);
+    window.removeEventListener('pagehide', this.onPageHide);
     this.stopClock();
     this.clearHideTimer();
     this.savePosition();
@@ -297,7 +301,37 @@ const VideoPlayer = {
   },
 
   methods: {
+    /** Tear down a server-side transcode session immediately to free GPU/disk. */
+    stopServerStream(streamId, useBeacon) {
+      if (!streamId) return;
+      const url = '/api/video/stream/' + encodeURIComponent(streamId);
+      if (useBeacon && navigator.sendBeacon) {
+        try { navigator.sendBeacon(url + '/stop'); return; } catch {}
+      }
+      fetch(url, { method: 'DELETE', keepalive: true }).catch(() => {});
+    },
+
+    onPageHide() {
+      if (this.stream && this.stream.streamId) {
+        this.stopServerStream(this.stream.streamId, true);
+      }
+    },
+
+    /** Resolve target start timestamp (explicit seek or saved resume point). */
+    resolveResumeSeconds() {
+      let target = this.pendingSeek || 0;
+      this.pendingSeek = 0;
+      if (!target && this.s.resumePlayback) {
+        const saved = parseFloat(localStorage.getItem('srvfiles-resume:' + this.path) || '0');
+        if (saved > 15 && this.meta && this.meta.duration && saved < this.meta.duration - 30) {
+          target = saved;
+        }
+      }
+      return target;
+    },
+
     async start() {
+      const seq = (this._startSeq = (this._startSeq || 0) + 1);
       // Keep the current frame attached while the next source is prepared.
       this.cleanup(true);
       // Swapping the media source can make the browser drop the orientation
@@ -330,39 +364,54 @@ const VideoPlayer = {
 
       try {
         // 1. Metadata (duration, resolution) — shown immediately
-        this.meta = await Utils.api('/api/video/metadata?path=' + encodeURIComponent(this.path));
+        const meta = await Utils.api('/api/video/metadata?path=' + encodeURIComponent(this.path));
+        if (seq !== this._startSeq) return; // superseded by another navigation
+        this.meta = meta;
+        this.resumeSeconds = this.resolveResumeSeconds();
 
         if (this.useDirect) {
           // Direct play: no transcode session needed
           this.stream = null;
           await this.attachPlayer();
+          if (seq !== this._startSeq) return;
           this.phase = 'ready';
           this.statusText = 'Playing';
           return;
         }
 
-        // 2. Start transcode session with current quality settings
+        // 2. Start transcode session with current quality settings + start offset
         this.statusText = 'Starting transcoder…';
         const requestedCodec = this.s.videoCodec === 'auto'
           ? (hevcSupported() ? 'hevc' : 'h264')
           : this.s.videoCodec;
-        this.activeCodec = requestedCodec;
-        const params = 'res=' + encodeURIComponent(this.s.videoResolution) +
+        let params = 'res=' + encodeURIComponent(this.s.videoResolution) +
           '&cq=' + encodeURIComponent(this.s.videoQuality) +
           '&speed=' + encodeURIComponent(this.s.encodeSpeed) +
           '&codec=' + encodeURIComponent(requestedCodec);
-        this.stream = await Utils.api('/api/video/stream/start?path=' +
+        if (this.resumeSeconds > 0) {
+          params += '&start=' + encodeURIComponent(this.resumeSeconds.toFixed(1));
+        }
+        const stream = await Utils.api('/api/video/stream/start?path=' +
           encodeURIComponent(this.path) + '&' + params);
-        this.totalSegments = this.stream.segments;
+        if (seq !== this._startSeq) {
+          // Superseded while starting — immediately clean up the orphaned session
+          this.stopServerStream(stream.streamId);
+          return;
+        }
+        this.stream = stream;
+        this.activeCodec = stream.activeCodec || requestedCodec;
+        this.totalSegments = stream.segments;
         this.cachedSegments = 0;
 
         // 3. Attach player
         await this.attachPlayer();
+        if (seq !== this._startSeq) return;
 
         this.phase = 'ready';
         this.statusText = 'Playing';
         this.startStatusPolling();
       } catch (e) {
+        if (seq !== this._startSeq) return;
         this.phase = 'error';
         this.errorMsg = e.message;
       }
@@ -462,34 +511,32 @@ const VideoPlayer = {
     async attachPlayer() {
       const player = this.$refs.video;
 
-      // Restore resume position (per-browser, per-file), or an explicit
-      // restart-at-position after a quality change
-      this.resumeSeconds = this.pendingSeek || 0;
-      this.pendingSeek = 0;
-      if (!this.resumeSeconds && this.s.resumePlayback) {
-        const saved = parseFloat(localStorage.getItem('srvfiles-resume:' + this.path) || '0');
-        if (saved > 15 && this.meta.duration && saved < this.meta.duration - 30) {
-          this.resumeSeconds = saved;
-        }
-      }
-
-      const onLoaded = () => {
+      // Attach loadedmetadata handler (tracked so cleanup() can remove it if
+      // the user navigates away before metadata finishes loading).
+      const resumeAt = this.resumeSeconds;
+      const usingHlsJs = !this.useDirect && !!(window.Hls && Hls.isSupported());
+      this._onLoaded = () => {
         // Dimensions are known now: when the player is already fullscreen
         // (e.g. moving to the next video), re-apply the orientation so a new
         // portrait video is not left locked in landscape from the previous one.
         this.clearOrientationRetry();
         if (this.isFullscreen) this.applyAutoOrientation();
-        if (this.resumeSeconds > 0) {
-          player.currentTime = this.resumeSeconds;
-          this.statusText = 'Resumed at ' + Utils.formatDuration(this.resumeSeconds);
+        if (resumeAt > 0) {
+          // hls.js already starts at `startPosition`; seek explicitly for
+          // direct play and native HLS (or if hls.js landed far off).
+          if (!usingHlsJs || Math.abs(player.currentTime - resumeAt) > 2) {
+            player.currentTime = resumeAt;
+          }
+          this.statusText = 'Resumed at ' + Utils.formatDuration(resumeAt);
           setTimeout(() => { if (this.statusText.startsWith('Resumed')) this.statusText = 'Playing'; }, 4000);
         }
         if (this.s.autoplay) {
           player.play().catch(() => { /* autoplay blocked */ });
         }
-        player.removeEventListener('loadedmetadata', onLoaded);
+        player.removeEventListener('loadedmetadata', this._onLoaded);
+        this._onLoaded = null;
       };
-      player.addEventListener('loadedmetadata', onLoaded);
+      player.addEventListener('loadedmetadata', this._onLoaded);
 
       // iOS enters fullscreen on the <video> element itself (there is no
       // document.fullscreenElement), so mirror those events into UI state.
@@ -504,10 +551,17 @@ const VideoPlayer = {
       if (this.useDirect) {
         // Direct play of the original file (browser-compatible sources)
         player.src = this.rawUrl;
-      } else if (window.Hls && Hls.isSupported()) {
+      } else if (usingHlsJs) {
+        const restartStream = () => {
+          const p = this.$refs.video;
+          this.pendingSeek = (p && p.currentTime) ? p.currentTime : resumeAt;
+          this.statusText = 'Recovering…';
+          setTimeout(() => this.start(), 50);
+        };
         this.hls = new Hls({
           enableWorker: true,
           lowLatencyMode: false,
+          startPosition: resumeAt > 0 ? resumeAt : -1,
           backBufferLength: 30,
           maxBufferLength: 40,
           maxMaxBufferLength: 60,
@@ -515,17 +569,25 @@ const VideoPlayer = {
           // position can take several seconds, so wait patiently instead
           // of failing fast
           fragLoadingTimeOut: 60000,
-          fragLoadingMaxRetry: 10,
+          fragLoadingMaxRetry: 6,
           fragLoadingRetryDelay: 500,
-          fragLoadingMaxRetryTimeout: 16000,
+          fragLoadingMaxRetryTimeout: 12000,
           manifestLoadingTimeOut: 30000,
           manifestLoadingMaxRetry: 4,
           levelLoadingTimeOut: 30000,
-          levelLoadingMaxRetry: 6,
+          levelLoadingMaxRetry: 4,
         });
         this.hls.loadSource(this.stream.playlistUrl);
         this.hls.attachMedia(player);
         this.hls.on(Hls.Events.ERROR, (_event, data) => {
+          // 404 means the server-side transcode session expired while paused:
+          // recreate it immediately instead of burning ~30 s on retries.
+          const httpCode = data && data.response && data.response.code;
+          if (httpCode === 404 && !this._restarting404) {
+            this._restarting404 = true;
+            this._recoveries = (this._recoveries || 0) + 1;
+            if (this._recoveries <= 3) { restartStream(); return; }
+          }
           if (!data.fatal) return;
           // Recoverable failures (e.g. seeked into an un-transcoded position,
           // or the transcode session expired): restart the stream seamlessly
@@ -536,12 +598,7 @@ const VideoPlayer = {
             return;
           }
           if (this._recoveries <= 3) {
-            const player = this.$refs.video;
-            this.pendingSeek = (player && player.currentTime) ? player.currentTime : 0;
-            this.statusText = 'Recovering…';
-            // Deferred: destroying hls.js from inside its own error callback
-            // can re-enter the handler
-            setTimeout(() => this.start(), 50);
+            restartStream();
             return;
           }
           this.phase = 'error';
@@ -565,13 +622,10 @@ const VideoPlayer = {
       player.addEventListener('play', this.onPlayPauseUi);
       player.addEventListener('pause', this.onPlayPauseUi);
       player.addEventListener('volumechange', this.onVolumeUi);
-      player.addEventListener('timeupdate', this.onTimeUi);
-      player.addEventListener('play', this.onPlayPauseUi);
-      player.addEventListener('pause', this.onPlayPauseUi);
-      player.addEventListener('volumechange', this.onVolumeUi);
       player.addEventListener('progress', this.onBufferUi);
       player.addEventListener('playing', this.onPlayingUi);
       this.muted = player.muted;
+      this._restarting404 = false;
     },
 
     /** Healthy playback for 10s clears the error-recovery budget */
@@ -710,9 +764,17 @@ const VideoPlayer = {
      */
     cleanup(keepMedia) {
       this.stopStatusPolling();
+      if (this.stream && this.stream.streamId) {
+        this.stopServerStream(this.stream.streamId);
+        this.stream = null;
+      }
       if (this.hls) { this.hls.destroy(); this.hls = null; }
       const player = this.$refs.video;
       if (player) {
+        if (this._onLoaded) {
+          player.removeEventListener('loadedmetadata', this._onLoaded);
+          this._onLoaded = null;
+        }
         player.removeEventListener('timeupdate', this.onTimeUpdate);
         player.removeEventListener('ended', this.onEnded);
         player.removeEventListener('timeupdate', this.onTimeUi);
