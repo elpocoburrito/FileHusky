@@ -248,7 +248,19 @@ const VideoPlayer = {
       if (value !== 'ready' || !TvMode.state.enabled) return;
       const active = document.activeElement;
       if (active && active.closest && active.closest('.video-area')) return;
-      setTimeout(() => { if (TvMode.state.enabled) TvMode.focusFirst(false); }, 60);
+      setTimeout(() => {
+        if (!TvMode.state.enabled) return;
+        // Loading hides the control bar (v-show), which drops the focus to
+        // <body>. Coming back, the user should land on the control they were
+        // using — pressing “next” keeps the cursor on “next”, not on play.
+        const remembered = this._tvLastControl;
+        if (remembered && remembered.isConnected && !remembered.disabled
+            && remembered.getClientRects().length) {
+          TvMode.focusElement(remembered, false);
+          return;
+        }
+        TvMode.focusFirst(false);
+      }, 60);
     },
 
     // Casting session started/stopped elsewhere (CastPanel, disconnect…)
@@ -976,8 +988,12 @@ const VideoPlayer = {
 
     /** TV focus entered the player — make sure the controls it targets are shown */
     onTvFocusIn(e) {
+      const el = e.target;
+      // Remember which control the remote is on, so a media change can put the
+      // focus back there instead of jumping to the centre play button.
+      if (el && el.closest && el.closest('.video-area')) this._tvLastControl = el;
       if (!TvMode.state.enabled || this.phase !== 'ready') return;
-      if (e.target && e.target.closest && e.target.closest('.video-area')) this.showControls();
+      if (el && el.closest && el.closest('.video-area')) this.showControls();
     },
 
     /** Pointer moved over the player — reveal controls (mouse only) */

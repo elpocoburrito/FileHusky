@@ -167,6 +167,36 @@ const TvMode = (function () {
     if (el && el.classList) el.classList.add('tv-focus');
   }
 
+  /**
+   * Run a scroll operation with instant behaviour.
+   *
+   * The app sets `html { scroll-behavior: smooth }`, which makes every
+   * `scrollIntoView()` animate — and a measurement taken right after it would
+   * still see the old position, so the reveal pass and the smooth animation
+   * fought each other (jitter on the way down, a half-scrolled position on the
+   * way up). Navigation scrolls must be immediate and measurable, so the
+   * inline style overrides the CSS for the duration of the call.
+   */
+  function instantScroll(fn) {
+    const root = document.scrollingElement || document.documentElement;
+    const style = root && root.style;
+    const prev = style ? style.scrollBehavior : '';
+    if (style) style.scrollBehavior = 'auto';
+    try {
+      fn(root);
+    } finally {
+      if (style) style.scrollBehavior = prev;
+    }
+  }
+
+  /** Scroll the page to a given offset, immediately. */
+  function scrollPageTo(top) {
+    instantScroll(() => {
+      if (window.scrollTo) window.scrollTo(0, top);
+      else window.scrollBy(0, top);
+    });
+  }
+
   function applyFocus(el, scroll) {
     if (!el) return null;
     try {
@@ -176,8 +206,10 @@ const TvMode = (function () {
     }
     markFocus(el);
     if (scroll !== false) {
-      el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-      revealFocus(el);
+      instantScroll(() => {
+        el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        revealFocus(el);
+      });
     }
     return el;
   }
@@ -306,7 +338,30 @@ const TvMode = (function () {
       || pick(list, cur, dir, false)
       || pick(scoped, cur, dir, true)
       || pick(list, cur, dir, true);
-    if (next) applyFocus(next);
+    if (!next) return;
+    applyFocus(next);
+    scrollToRegionEdge(next, dir);
+  }
+
+  /**
+   * Fully scroll a region into view when its first/last stop is reached.
+   *
+   * Revealing a row puts it just below the sticky overlay, which leaves the
+   * top (or bottom) of the page partly scrolled: reaching the first row of a
+   * list would still hide the toolbar above it. Once the focus arrives at the
+   * first/last stop of its region the page goes all the way to that edge.
+   */
+  function scrollToRegionEdge(el, dir) {
+    if (dir !== 'up' && dir !== 'down') return;
+    const mine = regionOf(el);
+    const list = candidates().filter(candidate => regionOf(candidate) === mine);
+    if (!list.length) return;
+    if (dir === 'up' && list[0] === el) {
+      scrollPageTo(0);
+    } else if (dir === 'down' && list[list.length - 1] === el) {
+      const root = document.scrollingElement || document.documentElement;
+      scrollPageTo(root ? root.scrollHeight : 1e6);
+    }
   }
 
   /* ═══ Activation ═══════════════════════════════════════════════════════ */
@@ -544,12 +599,29 @@ const TvMode = (function () {
     return false;
   }
 
-  /** A slider owns the axis it is drawn along; every other arrow moves focus. */
-  function handleDirection(e, active, dir) {
+  /**
+   * One direction step, whatever the input device.
+   *
+   * An armed <select> and a slider each own one axis; everything else moves
+   * the focus. The keyboard and the gamepad both come through here, so a
+   * controller gets exactly the same behaviour as a remote (the gamepad used
+   * to call moveFocus directly, which is why ↑/↓ could not touch the volume).
+   */
+  function navigate(dir) {
+    const active = document.activeElement;
+    if (armedSelect && active === armedSelect) {
+      if (dir === 'up' || dir === 'down') { stepSelect(armedSelect, dir); return; }
+      disarmSelect();
+    }
     const isRange = !!active && active.tagName === 'INPUT' && active.type === 'range';
+    if (isRange && rangeOwnsKey(active, dir)) { stepRange(active, dir); return; }
+    moveFocus(dir);
+  }
+
+  /** A slider owns the axis it is drawn along; every other arrow moves focus. */
+  function handleDirection(e, dir) {
     consume(e);
-    if (isRange && rangeOwnsKey(active, dir)) stepRange(active, dir);
-    else moveFocus(dir);
+    navigate(dir);
   }
 
   function onKeyDown(e) {
@@ -568,7 +640,7 @@ const TvMode = (function () {
 
     const dir = DIRS[key];
     if (handleArmedSelect(e, key, dir)) return;
-    if (dir) { handleDirection(e, active, dir); return; }
+    if (dir) { handleDirection(e, dir); return; }
     if (isActivateKey(key)) { startPress(e); return; }
     if (BACK_KEYS.indexOf(key) !== -1) { consume(e); goBack(); }
   }
@@ -646,10 +718,10 @@ const TvMode = (function () {
       const held = padHeld.get(action);
       if (!held) {
         padHeld.set(action, { since: now, last: now });
-        moveFocus(action);
+        navigate(action);
       } else if (now - held.since > 350 && now - held.last > 140) {
         held.last = now;
-        moveFocus(action);
+        navigate(action);
       }
     }
     for (const action of Array.from(padHeld.keys())) {
@@ -792,6 +864,8 @@ const TvMode = (function () {
     init,
     refocus,
     focusFirst,
+    /** Put the TV focus on a specific element (keeps ring + reveal logic). */
+    focusElement(el, scroll) { return applyFocus(el, scroll); },
   };
 })();
 

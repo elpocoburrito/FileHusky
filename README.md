@@ -60,7 +60,8 @@ segment is transcoded when you reach it.
   or Space activates (on release), Backspace closes the open menu/dialog,
   leaves fullscreen, goes up a folder or goes back. **Holding** Enter/Space
   (or A on a controller) opens the focused item's actions menu. A slider owns
-  only the axis it is drawn along, so nothing traps the arrows: the seek bar
+  only the axis it is drawn along — with a keyboard, a remote *or* a
+  controller — so nothing traps the arrows: the seek bar
   takes ←/→ (10 s steps) and lets ↑/↓ move on, the volume rocker takes ↑/↓
   (5 % steps) and lets ←/→ move on. A dropdown takes the arrows only after it
   has been opened. Long lists stay walkable: a row that is scrolled under a

@@ -774,3 +774,46 @@ jumped to the top nav bar instead of scrolling the list up.
   browse harness (7 checks) reproduces the nav-bar jump when the region rule
   and the tie-break are both reverted. With the fix: 24 + 35 + 10 + 7 harness
   checks and the 32-check jsdom render pass are all green.
+
+## Fix: controller sliders, prev/next focus and jumpy scrolling
+
+Three follow-ups from TV use: the volume rocker only worked with the keyboard,
+“next” moved the cursor onto play/pause, and long lists never scrolled fully
+to the top or bottom.
+
+- **Sliders (and selects) under a gamepad** — `pollGamepads()` called
+  `moveFocus()` straight for D-pad/stick directions, bypassing the keyboard's
+  axis rules, so `data-tv-axis`/`data-tv-step` were never consulted: ↑/↓ on the
+  rocker just moved the focus and the volume could not be changed with a
+  controller (an armed `<select>` had the same problem). Both devices now go
+  through a shared `navigate(dir)`: armed select → step, slider on its own axis
+  → step, everything else → `moveFocus`. `handleDirection()` is now just
+  `consume()` + `navigate()`.
+- **“Next” must not steal the cursor** — `start()` puts the phase in
+  `loading`, which hides `.vcontrols` (`v-show`), and hiding an element that
+  contains the focused button drops the focus to `<body>`. The `phase`
+  watcher then focused `.vc-center`. `onTvFocusIn` now remembers the last
+  control inside `.video-area` (`_tvLastControl`) and the watcher restores it
+  when playback is ready (`TvMode.focusElement`, guarded by `isConnected`,
+  `disabled` and `getClientRects().length`), falling back to
+  `TvMode.focusFirst()` only when there is nothing to restore.
+- **Scrolling** — the app sets `html { scroll-behavior: smooth }`, so
+  `scrollIntoView()` *animated*, while `revealFocus()` measured straight
+  afterwards. Every navigation did two scrolls computed from a position that
+  had not settled yet: jitter on the way down and a half-scrolled page on the
+  way up. New `instantScroll()` sets `scroll-behavior: auto` inline for the
+  duration of a navigation scroll (and restores it), so `scrollIntoView` +
+  `revealFocus` are immediate and deterministic — the reveal converges in one
+  or two measured passes.
+- **Fully up / fully down** — new `scrollToRegionEdge()`: when the focus
+  arrives at the *first* focusable of its region the page scrolls to the top,
+  and at the *last* one it scrolls to the bottom. Revealing a row leaves it 8 px
+  under the sticky overlay, which used to keep the toolbar (browser) or the
+  info card (queue) partly out of view after the final Up.
+- Verified: harness3 gained D-pad slider checks (→/← leave the rocker
+  untouched, ↑/↓ change it with the repeat behaviour, seek bar keeps the
+  horizontal axis) — reverting the gamepad path reproduces the bug (volume
+  stuck at 0.5, focus on a row); harness2 gained boundary checks (reaching the
+  first queue item scrolls to 0, reaching the last scrolls to the document
+  height); harness4 checks the browse page scrolls fully up at the first row.
+  Totals: 24 + 38 + 19 + 8 harness checks plus the 32-check jsdom render pass.
