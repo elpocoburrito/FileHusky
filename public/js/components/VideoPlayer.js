@@ -67,12 +67,6 @@ const VideoPlayer = {
       pendingSeek: 0,          // restart-at-position (quality change)
       activeCodec: 'h264',     // codec actually in use for this session
 
-      // ── Tagging overlay state ─────────────────────────────────────────
-      tagsOpen: false,
-      allTags: { groups: [], ungrouped: [] },  // available tags (from server)
-      videoTagIds: [],         // tag ids applied to this video
-      videoRating: null,       // 1–5 or null
-      tagsLoading: false,
       isFullscreen: false,
       wallClock: '',            // HH:MM readout for the top bar
       clockTimer: null,
@@ -235,7 +229,6 @@ const VideoPlayer = {
       this._manualOrientation = false;
       this.start();
       this.loadUpNext();
-      this.loadVideoTags();
     },
 
     // Receiver state pushed by the polling loop
@@ -271,7 +264,6 @@ const VideoPlayer = {
 
     // Keep player UI visible while any overlay/menu is open; resume auto-hide on close
     qualityOpen(open) { if (open) this.showControls(); else this.scheduleHide(); },
-    tagsOpen(open) { if (open) this.showControls(); else this.scheduleHide(); },
     castOpen(open) { if (open) this.showControls(); else this.scheduleHide(); },
     externalOpen(open) { if (open) this.showControls(); else this.scheduleHide(); },
   },
@@ -291,7 +283,6 @@ const VideoPlayer = {
     this.startClock();
     await this.start();
     if (this.folder) this.loadUpNext();
-    this.loadVideoTags();
   },
 
   beforeUnmount() {
@@ -1046,7 +1037,7 @@ const VideoPlayer = {
     /** True when the element belongs to a player control or overlay. */
     isControlTarget(el) {
       if (!el || !el.closest) return false;
-      return !!el.closest('.vcontrols, .vc-top, .vc-center, .remote-panel, .tag-fs, ' +
+      return !!el.closest('.vcontrols, .vc-top, .vc-center, .remote-panel, ' +
         '.vc-quality, .quality-backdrop, .video-overlay');
     },
 
@@ -1139,7 +1130,7 @@ const VideoPlayer = {
       const action = e.detail && e.detail.action;
       const settingsOpen = Boolean(document.querySelector('.settings-root'));
       if (action === 'quality') {
-        if (this.externalOpen || this.castOpen || this.tagsOpen || settingsOpen) return;
+        if (this.externalOpen || this.castOpen || settingsOpen) return;
         this.qualityOpen = !this.qualityOpen;
         if (this.qualityOpen) {
           this.showControls();
@@ -1151,7 +1142,7 @@ const VideoPlayer = {
         }
         return;
       }
-      if (this.qualityOpen || this.tagsOpen || this.castOpen || this.externalOpen || settingsOpen) return;
+      if (this.qualityOpen || this.castOpen || this.externalOpen || settingsOpen) return;
       switch (action) {
         case 'fullscreen': this.toggleFullscreen(); break;
         case 'prev': this.goPrev(); break;
@@ -1181,18 +1172,17 @@ const VideoPlayer = {
         // or UI wake-up restores focus there instead of jumping back to play/pause.
         this._tvLastControl = el;
         if (TvMode.state.enabled && this.phase === 'ready') this.showControls();
-      } else if (!el.closest || !el.closest('.modal-root, .settings-root, .vc-quality, .tag-fs')) {
+      } else if (!el.closest || !el.closest('.modal-root, .settings-root, .vc-quality')) {
         // Focus moved intentionally to the queue/header — don't reuse an old player button
         this._tvLastControl = null;
       }
     },
 
-    /** TV Backspace closes the non-fullscreen tag panel or open player modals first. */
+    /** TV Backspace closes open player modals first. */
     onTvBack(e) {
       if (this.externalOpen) { e.preventDefault(); this.externalOpen = false; return; }
       if (this.castOpen) { e.preventDefault(); this.castOpen = false; return; }
-      if (this.qualityOpen) { e.preventDefault(); this.qualityOpen = false; return; }
-      if (this.tagsOpen) { e.preventDefault(); this.tagsOpen = false; }
+      if (this.qualityOpen) { e.preventDefault(); this.qualityOpen = false; }
     },
 
     /** Pointer moved over the player — reveal controls (mouse only) */
@@ -1285,7 +1275,7 @@ const VideoPlayer = {
 
     /** Mouse scroll wheel over the player: adjust volume, show a % HUD */
     onWheel(e) {
-      if (this.phase !== 'ready' || this.tagsOpen) return; // tag panel scrolls, not volume
+      if (this.phase !== 'ready') return;
       const step = e.deltaY < 0 ? 0.05 : -0.05;
       if (this.remote) {
         const cur = this.muted ? 0 : this.playerVolume;
@@ -1320,7 +1310,7 @@ const VideoPlayer = {
 
     scheduleHide() {
       this.clearHideTimer();
-      if (this.remote || this.qualityOpen || this.tagsOpen || this.castOpen || this.externalOpen) return;
+      if (this.remote || this.qualityOpen || this.castOpen || this.externalOpen) return;
       const player = this.$refs.video;
       if (!player || player.paused) return; // always show controls when paused
       this.hideTimer = setTimeout(() => this.hideControls(), 3000);
@@ -1336,12 +1326,6 @@ const VideoPlayer = {
         return;
       }
       if (this.phase !== 'ready' || this.castOpen || document.querySelector('.settings-root')) return;
-      // While the tagging overlay is open, only Escape closes it — avoid
-      // playback hotkeys (space/arrows) firing while working with tags
-      if (this.tagsOpen) {
-        if (e.key === 'Escape') this.tagsOpen = false;
-        return;
-      }
       const active = document.activeElement;
       const tag = (active && active.tagName) || '';
       if (tag === 'TEXTAREA' || tag === 'SELECT' || (tag === 'INPUT' && active.type !== 'range')) return;
@@ -1386,7 +1370,7 @@ const VideoPlayer = {
       }
     },
 
-    // ═══ Tagging overlay ══════════════════════════════════════════════════
+    // ═══ Fullscreen & orientation ═════════════════════════════════════════
 
     onFullscreenChange() {
       const area = this.$refs.videoArea;
@@ -1498,98 +1482,6 @@ const VideoPlayer = {
       } catch { /* ignore */ }
       this.onOrientationChange();
     },
-
-    async toggleTags() {
-      this.tagsOpen = !this.tagsOpen;
-      if (this.tagsOpen) {
-        // Fresh tag list each time (it may have been edited on the tags page)
-        await this.loadAllTags();
-        this.showControls();
-      }
-    },
-
-    async loadAllTags() {
-      this.tagsLoading = true;
-      try {
-        this.allTags = await Utils.api('/api/tags');
-      } catch { /* keep previous list */ }
-      this.tagsLoading = false;
-    },
-
-    async loadVideoTags() {
-      try {
-        const data = await Utils.api('/api/video/tags?path=' + encodeURIComponent(this.path));
-        this.videoTagIds = data.tags || [];
-        this.videoRating = data.rating == null ? null : data.rating;
-      } catch {
-        this.videoTagIds = [];
-        this.videoRating = null;
-      }
-    },
-
-    /** Toggle a tag; exclusive groups deselect their siblings first */
-    toggleTag(tag) {
-      const i = this.videoTagIds.indexOf(tag.id);
-      if (i >= 0) {
-        this.videoTagIds.splice(i, 1);
-      } else {
-        if (tag.groupId != null) {
-          // Radio behavior within the group: drop other tags of that group.
-          // Need each tag's group membership — check across groups + ungrouped.
-          const siblingIds = [];
-          for (const g of this.allTags.groups) {
-            if (g.id !== tag.groupId) continue;
-            for (const t of g.tags) if (t.id !== tag.id) siblingIds.push(t.id);
-          }
-          this.videoTagIds = this.videoTagIds.filter(id => !siblingIds.includes(id));
-        }
-        this.videoTagIds.push(tag.id);
-      }
-      this.saveVideoTags();
-    },
-
-    /** n = 1–5, or null to clear. Clicking the current star clears it. */
-    setRating(n) {
-      this.videoRating = (n == null || this.videoRating === n) ? null : n;
-      this.saveVideoTags();
-    },
-
-    /** Create a tag from the overlay and apply it to this video immediately */
-    async createTag({ name, groupId }) {
-      try {
-        const tag = await Utils.api('/api/tags', { method: 'POST', body: { name, groupId } });
-        const full = { id: tag.id, name: tag.name, groupId };
-        if (groupId != null) {
-          const g = this.allTags.groups.find(g => g.id === groupId);
-          if (g) g.tags.push(full); else this.allTags.ungrouped.push(full);
-        } else {
-          this.allTags.ungrouped.push(full);
-        }
-        // Exclusive-group handling applies to the new tag as well
-        this.toggleTag(full);
-      } catch (e) {
-        console.error('Create tag failed:', e);
-      }
-    },
-
-    async saveVideoTags() {
-      try {
-        await Utils.api('/api/video/tags', {
-          method: 'PUT',
-          body: {
-            path: this.path,
-            tagIds: this.videoTagIds.slice(),
-            rating: this.videoRating,
-          },
-        });
-      } catch (e) {
-        console.error('Saving tags failed:', e);
-      }
-    },
-
-    openTagManager() {
-      this.$router.push({ name: 'tags' });
-    },
   },
 
   template: `
@@ -1602,9 +1494,6 @@ const VideoPlayer = {
           <ui-icon name="arrowBack"></ui-icon>
         </button>
         <h1 class="header-title">{{ displayName }}</h1>
-        <button class="icon-btn" @click="openTagManager" title="Manage tags">
-          <ui-icon name="label"></ui-icon>
-        </button>
         <tv-toggle></tv-toggle>
         <button class="icon-btn" @click="$emit('open-settings')" title="Settings">
           <ui-icon name="settings"></ui-icon>
@@ -1656,7 +1545,7 @@ const VideoPlayer = {
         </button>
       </div>
 
-      <!-- ── Top bar: video title, wall clock, download/external/tags ── -->
+      <!-- ── Top bar: video title, wall clock, download/cast/external ── -->
       <transition name="vc-fade">
         <div v-show="phase === 'ready' && controlsVisible" class="vc-top" @click.stop>
           <span class="vc-title">{{ displayName }}</span>
@@ -1670,10 +1559,6 @@ const VideoPlayer = {
             </button>
             <button class="vc-btn vc-btn-sm" @click="externalOpen = true" title="Open in external player">
               <ui-icon name="openExternal" :size="22"></ui-icon>
-            </button>
-            <button class="vc-btn vc-btn-sm" :class="{ 'vc-btn-on': tagsOpen }" @click="toggleTags"
-                    title="Tags & rating">
-              <ui-icon name="label" :size="22"></ui-icon>
             </button>
           </div>
         </div>
@@ -1799,23 +1684,6 @@ const VideoPlayer = {
         </div>
         <p class="vq-note">Slower encoding = smaller files at the same quality, but uses more CPU/GPU. HEVC plays only on devices with hardware HEVC decoding — Auto picks it only when supported.</p>
       </div>
-
-      <!-- ── Tagging overlay: fullscreen = narrow right-side column, ────
-           covering as little of the video as possible ────────────────── -->
-      <div v-if="tagsOpen && isFullscreen" class="tag-fs">
-        <tag-panel :all-tags="allTags" :selected="videoTagIds" :rating="videoRating"
-                   :loading="tagsLoading"
-                   @toggle-tag="toggleTag" @set-rating="setRating"
-                   @create-tag="createTag" @close="tagsOpen = false"></tag-panel>
-      </div>
-    </div>
-
-    <!-- ── Tagging overlay: not fullscreen = panel below the video ────── -->
-    <div v-if="tagsOpen && !isFullscreen" class="tag-below">
-      <tag-panel :all-tags="allTags" :selected="videoTagIds" :rating="videoRating"
-                 :loading="tagsLoading"
-                 @toggle-tag="toggleTag" @set-rating="setRating"
-                 @create-tag="createTag" @close="tagsOpen = false"></tag-panel>
     </div>
 
     <main class="page-body player-body">

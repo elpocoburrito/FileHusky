@@ -65,7 +65,7 @@ const TvMode = (function () {
     'textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
   /** Overlay layers — while one is open, navigation stays inside it. */
-  const LAYERS = '.modal-root, .settings-root, .vc-quality, .row-menu, .tag-fs';
+  const LAYERS = '.modal-root, .settings-root, .vc-quality, .row-menu';
 
   /** Compact popup menus where wrapping top↔bottom is helpful. */
   const WRAP_LAYERS = '.row-menu, .vc-quality';
@@ -711,8 +711,7 @@ const TvMode = (function () {
    *   1. Disarm an armed <select> or text <input>
    *   2. Close the topmost overlay layer (and restore focus to its opener)
    *   3. Exit fullscreen
-   *   4. View-level handler (`tv-back`, e.g. FileManager goes up one folder,
-   *      VideoPlayer closes non-fullscreen tag panel)
+   *   4. View-level handler (`tv-back`, e.g. FileManager goes up one folder)
    *   5. Browser history back, falling back to #/home
    */
   function goBack() {

@@ -31,7 +31,7 @@ services:
       # NOTE: this includes /var/run/docker.sock under /host — treat the
       # container as trusted (or mount read-only) if that is a concern.
       - /:/host
-      # Video tags + ratings database (SQLite), survives rebuilds/upgrades
+      # Persistent app data (home favorites), survives rebuilds/upgrades
       - srvfiles-data:/app/data
     healthcheck:
       test:

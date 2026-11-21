@@ -18,8 +18,6 @@
     "HomePage": "readonly",
     "VideoPlayer": "readonly",
     "SettingsPanel": "readonly",
-    "TagManager": "readonly",
-    "TagPanel": "readonly",
     "CastPanel": "readonly"
   }
 }

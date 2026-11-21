@@ -40,11 +40,6 @@
       @open-settings="settingsOpen = true"
     ></video-player>
 
-    <tag-manager
-      v-else-if="route.name === 'tags'"
-      @open-settings="settingsOpen = true"
-    ></tag-manager>
-
     <home-page
       v-else-if="route.name === 'home'"
       @open-settings="settingsOpen = true"
@@ -69,8 +64,6 @@
   <script src="js/castStore.js"></script>
   <script src="js/components/FileManager.js"></script>
   <script src="js/components/Home.js"></script>
-  <script src="js/components/TagPanel.js"></script>
-  <script src="js/components/TagManager.js"></script>
   <script src="js/components/CastPanel.js"></script>
   <script src="js/components/VideoPlayer.js"></script>
   <script src="js/components/SettingsPanel.js"></script>

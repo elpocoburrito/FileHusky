@@ -33,12 +33,6 @@ segment is transcoded when you reach it.
   fullscreen and hidden)
 - Save the original file to disk, open it in an external player (VLC,
   nPlayer, …) or copy a direct stream link
-- **Tagging & ratings** — tag videos from an overlay in the player
-  (right side in fullscreen, below the player otherwise) and rate them
-  1–5 stars; tags are organized in exclusive groups (e.g.
-  work/personal, sunny/cloudy/rainy) and managed on a dedicated page;
-  everything is stored server-side in a SQLite database
-  (`data/tags.db`)
 - **Folder actions (⋮ menu on folder rows)** — download a whole folder
   as a ZIP file, or delete it (with its contents) after confirmation
 - **Home menu** — the landing page (root URL and the house icon) lists
@@ -127,16 +121,12 @@ Notes:
 | `PORT`     | HTTP port (default `3000`)                                     |
 | `HOST_ROOT`| Where the host filesystem is mounted inside the container (default unset = serve `/` directly; Docker compose sets `/host`) |
 
-The tagging database lives in `data/` next to `server.js` (created on
-first use). In Docker it is persisted via the `srvfiles-data` volume.
+Persistent app data (such as home menu favorites) lives in `data/` next
+to `server.js` (created on first use). In Docker it is persisted via the
+`srvfiles-data` volume.
 
-## API (tags)
+## API (folders)
 
-- `GET /api/tags` — all groups and tags
-- `POST /api/tags` / `PUT /api/tags/:id` / `DELETE /api/tags/:id` — manage tags
-- `POST /api/groups` / `PUT /api/groups/:id` / `DELETE /api/groups/:id` — manage groups
-- `GET /api/video/tags?path=…` — tags + rating of one video
-- `PUT /api/video/tags` — set `{ path, tagIds, rating }` (rating 1–5 or `null`)
 - `GET /api/download/zip?path=…` — stream a folder as a ZIP download
   (folder is the zip root; hidden files included)
 - `DELETE /api/folder?path=…` — delete a folder and all contents

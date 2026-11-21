@@ -1,6 +1,6 @@
 /* ─── App root: registration, hash router, theme ──────────────────────────── */
 
-/* global Vue, UiIcon, SettingsStore, TvMode, FileManager, HomePage, VideoPlayer, SettingsPanel, TagManager, TagPanel, ToggleSwitch, CastPanel */
+/* global Vue, UiIcon, SettingsStore, TvMode, FileManager, HomePage, VideoPlayer, SettingsPanel, ToggleSwitch, CastPanel */
 
 (function () {
   'use strict';
@@ -31,7 +31,6 @@
         folder: params.get('folder') || '',
       };
     }
-    if (route === '/tags') return { name: 'tags' };
     if (route === '/home' || route === '/') return { name: 'home' };
     return { name: 'browse', path: params.get('path') || null };
   }
@@ -45,7 +44,6 @@
 
   function toHash(to) {
     if (to.name === 'home') return '#/home';
-    if (to.name === 'tags') return '#/tags';
     if (to.name === 'video') {
       const p = new URLSearchParams();
       p.set('path', to.path);
@@ -116,8 +114,6 @@
   app.component('cast-panel', CastPanel);
   app.component('video-player', VideoPlayer);
   app.component('settings-panel', SettingsPanel);
-  app.component('tag-manager', TagManager);
-  app.component('tag-panel', TagPanel);
 
   app.mount('#app');
 

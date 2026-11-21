@@ -106,9 +106,6 @@ const HomePage = {
         </button>
         <h1 class="header-title">Home</h1>
         <div class="header-actions">
-          <button class="icon-btn" @click="$router.push({ name: 'tags' })" title="Manage tags">
-            <ui-icon name="label"></ui-icon>
-          </button>
           <tv-toggle></tv-toggle>
           <button class="icon-btn" @click="$emit('open-settings')" title="Settings">
             <ui-icon name="settings"></ui-icon>
