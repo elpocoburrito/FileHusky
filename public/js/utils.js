@@ -1,4 +1,29 @@
-/* ─── SrvFiles utils ────────────────────────────────────────────────────── */
+/* ─── FileHusky utils ────────────────────────────────────────────────────── */
+
+/* One-time migration: the app used to be called SrvFiles and stored its
+   browser state under `srvfiles-*` keys. Copy anything found under the old
+   prefix (settings, last path, per-video resume positions) to the new
+   `filehusky-*` keys, then drop the old ones. Runs before SettingsStore reads
+   its key, and is a no-op once the old keys are gone. */
+(function migrateLegacyKeys() {
+  try {
+    const OLD = 'srvfiles-';
+    const NEW = 'filehusky-';
+    const stale = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(OLD)) stale.push(key);
+    }
+    for (const key of stale) {
+      const next = NEW + key.slice(OLD.length);
+      const value = localStorage.getItem(key);
+      if (value !== null && localStorage.getItem(next) === null) {
+        localStorage.setItem(next, value);
+      }
+      localStorage.removeItem(key);
+    }
+  } catch { /* storage unavailable — nothing to migrate */ }
+})();
 
 const Utils = {
   /** Fetch JSON, throw readable errors. opts: { method, body } (body → JSON) */

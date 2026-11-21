@@ -149,7 +149,7 @@ const FileManager = {
   methods: {
     initialPath() {
       if (this.s.rememberPath) {
-        const last = localStorage.getItem('srvfiles-lastpath');
+        const last = localStorage.getItem('filehusky-lastpath');
         if (last) return last;
       }
       return Utils.defaultPath();
@@ -166,12 +166,12 @@ const FileManager = {
       this.editingPath = false;
       try {
         if (this.s.rememberPath) {
-          try { localStorage.setItem('srvfiles-lastpath', dirPath); } catch {}
+          try { localStorage.setItem('filehusky-lastpath', dirPath); } catch {}
         }
         const data = await Utils.api(`/api/browse?path=${encodeURIComponent(dirPath)}`);
         this.data = data;
         this.loading = false;
-        document.title = (data.path === '/' || data.path.endsWith('\\') ? 'SrvFiles' : data.path.split(/[\\/]/).pop()) + ' — SrvFiles';
+        document.title = (data.path === '/' || data.path.endsWith('\\') ? 'FileHusky' : data.path.split(/[\\/]/).pop()) + ' — FileHusky';
         await this.$nextTick();
         const savedScroll = this._scrollMem[data.path];
         if (savedScroll == null) window.scrollTo(0, 0);

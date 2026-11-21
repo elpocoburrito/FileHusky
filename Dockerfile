@@ -1,4 +1,4 @@
-# SrvFiles — file browser with on-demand video transcoding
+# FileHusky — file browser with on-demand video transcoding
 #
 # The host filesystem is expected to be mounted at /host (see
 # docker-compose.yml:  volumes: ["/:/host"]) and is served with clean

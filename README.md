@@ -1,4 +1,4 @@
-# SrvFiles
+# FileHusky
 
 A self-hosted file browser with on-demand video transcoding. Browse the
 whole filesystem, open any video, and stream it in the browser with
@@ -108,7 +108,7 @@ Notes:
 
 Persistent app data (such as home menu favorites) lives in `data/` next
 to `server.js` (created on first use). In Docker it is persisted via the
-`srvfiles-data` volume.
+`filehusky-data` volume.
 
 ## API (folders)
 

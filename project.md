@@ -1095,3 +1095,32 @@ mode) plus explicit progress-bar → play/pause focus routing:
     details from commit metadata, commit messages, and historical blobs;
     expired reflogs and pruned unreachable git objects.
   - Removed local media, runtime data, and log files from the workspace.
+
+----
+
+## Rebrand: SrvFiles → FileHusky
+
+- **Naming**:
+  - `package.json` / `package-lock.json` name `srvfiles` → `filehusky`.
+  - UI/title/comment branding `SrvFiles` → `FileHusky` in `public/index.html`
+    (`<title>`, `noscript`, favicon comment), `FileManager.js` document title,
+    `SettingsPanel.js` footer, `utils.js`/`style.css` headers.
+  - Docs & deploy files: `README.md` heading and volume name, `Dockerfile`
+    and `docker-compose.yml` headers, compose service / `container_name` /
+    volume `srvfiles` → `filehusky`, data volume `filehusky-data`.
+- **Runtime identifiers**:
+  - Transcode temp dir `os.tmpdir()/<name>-cache`: `srvfiles-cache` →
+    `filehusky-cache` (`server.js`).
+  - Browser storage prefix `srvfiles-*` → `filehusky-*` for
+    `filehusky-settings`, `filehusky-lastpath`, `filehusky-resume:<path>`.
+- **Backwards compatibility**: `public/js/utils.js` runs a one-time
+  `migrateLegacyKeys()` IIFE (before `settings.js` loads) that copies every
+  `srvfiles-*` localStorage entry to its `filehusky-*` counterpart — existing
+  settings and resume positions survive the rename — then removes the old
+  keys. No-op once migrated.
+- **Favicon**: the generic folder icon was replaced with an inline SVG husky
+  head (accent `#5b9bff`, white muzzle, dark eyes/nose) in `index.html`.
+- Verified: `node --check` on `server.js` and all touched component/JS files,
+  `oxlint` on `utils.js` (only the two pre-existing `no-unused-vars`
+  warnings), and no `srvfiles`/`SrvFiles` string remains outside this file's
+  historical notes.

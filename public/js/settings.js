@@ -1,7 +1,7 @@
 /* ─── Reactive settings store, persisted to localStorage ─────────────────── */
 
 const SettingsStore = (function () {
-  const KEY = 'srvfiles-settings';
+  const KEY = 'filehusky-settings';
   const DEFAULTS = {
     // Appearance
     theme: 'dark',               // 'dark' | 'light'

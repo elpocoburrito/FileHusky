@@ -247,7 +247,7 @@ const SettingsPanel = {
             </div>
           </section>
 
-          <p class="settings-footer">SrvFiles · settings are saved in this browser</p>
+          <p class="settings-footer">FileHusky · settings are saved in this browser</p>
         </div>
       </div>
     </div>

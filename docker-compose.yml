@@ -1,4 +1,4 @@
-# SrvFiles — file browser with on-demand video transcoding
+# FileHusky — file browser with on-demand video transcoding
 #
 # Serves the WHOLE host filesystem: "/" is mounted into the container at
 # /host and the server maps paths transparently, so the UI shows host
@@ -10,9 +10,9 @@
 # the server falls back to software transcoding either way.
 
 services:
-  srvfiles:
+  filehusky:
     build: .
-    container_name: srvfiles
+    container_name: filehusky
     restart: unless-stopped
     ports:
       - "3003:3000"
@@ -25,7 +25,7 @@ services:
       # container as trusted (or mount read-only) if that is a concern.
       - /:/host
       # Persistent app data (home favorites), survives rebuilds/upgrades
-      - srvfiles-data:/app/data
+      - filehusky-data:/app/data
     healthcheck:
       test:
         - CMD
@@ -49,4 +49,4 @@ services:
               capabilities: [gpu]
 
 volumes:
-  srvfiles-data:
+  filehusky-data:

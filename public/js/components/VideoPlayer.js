@@ -276,7 +276,7 @@ const VideoPlayer = {
       let target = this.pendingSeek || 0;
       this.pendingSeek = 0;
       if (!target && this.s.resumePlayback) {
-        const saved = parseFloat(localStorage.getItem('srvfiles-resume:' + this.path) || '0');
+        const saved = parseFloat(localStorage.getItem('filehusky-resume:' + this.path) || '0');
         if (saved > 15 && this.meta && this.meta.duration && saved < this.meta.duration - 30) {
           target = saved;
         }
@@ -510,7 +510,7 @@ const VideoPlayer = {
       const now = Date.now();
       if (!this._lastSave || now - this._lastSave > 3000) {
         this._lastSave = now;
-        localStorage.setItem('srvfiles-resume:' + this.path, String(player.currentTime));
+        localStorage.setItem('filehusky-resume:' + this.path, String(player.currentTime));
       }
     },
 
@@ -519,15 +519,15 @@ const VideoPlayer = {
       if (!player || !player.currentTime) return;
       if (this.meta && this.meta.duration && player.currentTime > this.meta.duration - 15) {
         // Basically finished — clear resume point
-        localStorage.removeItem('srvfiles-resume:' + this.path);
+        localStorage.removeItem('filehusky-resume:' + this.path);
       } else {
-        localStorage.setItem('srvfiles-resume:' + this.path, String(player.currentTime));
+        localStorage.setItem('filehusky-resume:' + this.path, String(player.currentTime));
       }
     },
 
     onEnded() {
       if (this.loopOn) return; // looping is handled natively by the video element
-      localStorage.removeItem('srvfiles-resume:' + this.path);
+      localStorage.removeItem('filehusky-resume:' + this.path);
       if (this.s.autoNext && this.nextVideo) {
         this.openVideo(this.nextVideo);
       }

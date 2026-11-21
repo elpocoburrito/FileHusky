@@ -7,7 +7,7 @@ const os = require('os');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const CACHE_DIR = path.join(os.tmpdir(), 'srvfiles-cache');
+const CACHE_DIR = path.join(os.tmpdir(), 'filehusky-cache');
 
 if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
 // Clear orphaned transcode session folders left behind by a previous run/crash

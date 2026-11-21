@@ -1,5 +1,5 @@
 {
-  "name": "srvfiles",
+  "name": "filehusky",
   "version": "1.0.0",
   "description": "File browser with on-demand video transcoding and playback",
   "main": "server.js",
