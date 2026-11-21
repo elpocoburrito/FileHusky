@@ -1,6 +1,6 @@
 /* ─── VideoPlayer: dedicated playback page ───────────────────────────────── */
 
-/* global Vue, Utils, SettingsStore, Hls, CastStore, TvMode */
+/* global Vue, Utils, SettingsStore, Hls, TvMode */
 
 const VIDEO_EXT_DIRECT = new Set(['.mp4', '.m4v', '.mov', '.webm']);
 const DIRECT_VIDEO_CODECS = new Set(['h264', 'vp8', 'vp9', 'av1']);
@@ -61,7 +61,6 @@ const VideoPlayer = {
       bufferedPercent: 0,
       scrubbing: false,
       externalOpen: false,
-      castOpen: false,
       copied: false,
       qualityOpen: false,
       pendingSeek: 0,          // restart-at-position (quality change)
@@ -71,9 +70,6 @@ const VideoPlayer = {
       wallClock: '',            // HH:MM readout for the top bar
       clockTimer: null,
       landscape: false,         // orientation lock active
-
-      // ── Casting / remote-control mode ──────────────────────────────────
-      remote: false,            // local playback replaced by the remote panel
     };
   },
 
@@ -82,34 +78,6 @@ const VideoPlayer = {
 
     /** TV mode adds a transport button to the bottom bar (no click surface). */
     tvMode() { return TvMode.state.enabled; },
-
-    // ── Casting session ────────────────────────────────────────────────
-    cast() { return CastStore.state; },
-
-    receiverName() {
-      return (this.cast.receiver && this.cast.receiver.name) || 'receiver';
-    },
-
-    remoteStatusText() {
-      if (this.cast.error) return this.cast.error;
-      const pb = this.cast.playback;
-      if (!pb) return 'Connecting…';
-      switch (pb.status) {
-        case 'playing': return 'Playing';
-        case 'paused': return 'Paused';
-        case 'loading': return 'Loading…';
-        case 'error': return 'Playback error' + (pb.error ? ': ' + pb.error : '');
-        case 'stopped': return 'Stopped';
-        default: return 'Idle';
-      }
-    },
-
-    // Duration shown on the seek bar — receiver duration while casting
-    displayDuration() {
-      if (!this.remote) return this.seekMax;
-      const pb = this.cast.playback;
-      return (pb && pb.duration) || (this.meta && this.meta.duration) || 0;
-    },
 
     // Template needs to disable the HEVC option on unsupported devices
     hevcSupported: () => hevcSupported(),
@@ -148,7 +116,7 @@ const VideoPlayer = {
       return (this.meta && this.meta.duration) ? this.meta.duration : 0;
     },
     currentTimePercent() {
-      return this.displayDuration ? Math.min(100, this.currentTime / this.displayDuration * 100) : 0;
+      return this.seekMax ? Math.min(100, this.currentTime / this.seekMax * 100) : 0;
     },
 
     rawUrl() {
@@ -175,10 +143,6 @@ const VideoPlayer = {
     },
 
     activeConfig() {
-      if (this.remote) {
-        const how = { 'hls-transcode': 'transcoding', 'direct-file': 'direct play', 'local-file': 'local file' }[this.cast.backend];
-        return 'Casting to ' + this.receiverName + (how ? ' · ' + how : '');
-      }
       if (this.useDirect) return 'Direct play — original quality, no transcoding';
       const res = this.s.videoResolution === 'orig' ? 'original resolution' : this.s.videoResolution + 'p';
       const speed = { fast: 'fastest', balanced: 'balanced', best: 'best' }[this.s.encodeSpeed] || 'fastest';
@@ -231,11 +195,6 @@ const VideoPlayer = {
       this.loadUpNext();
     },
 
-    // Receiver state pushed by the polling loop
-    'cast.playback'(pb) {
-      this.onCastPlayback(pb);
-    },
-
     // Ready to play: in TV mode the remote should land on the player controls
     // (they only exist once the phase is `ready`).
     phase(value) {
@@ -257,14 +216,8 @@ const VideoPlayer = {
       }, 60);
     },
 
-    // Casting session started/stopped elsewhere (CastPanel, disconnect…)
-    'cast.active'(active) {
-      this.onCastActive(active);
-    },
-
     // Keep player UI visible while any overlay/menu is open; resume auto-hide on close
     qualityOpen(open) { if (open) this.showControls(); else this.scheduleHide(); },
-    castOpen(open) { if (open) this.showControls(); else this.scheduleHide(); },
     externalOpen(open) { if (open) this.showControls(); else this.scheduleHide(); },
   },
 
@@ -342,7 +295,6 @@ const VideoPlayer = {
         this.lockOrientation('landscape');
         this.holdLandscape();
       }
-      this.remote = false;
       this.phase = 'loading';
       this.errorMsg = null;
       this.statusText = 'Analyzing video…';
@@ -355,13 +307,6 @@ const VideoPlayer = {
       this.bufferedPercent = 0;
       this.scrubbing = false;
       this.controlsVisible = true;
-
-      // A casting session is active: this page becomes a remote control for
-      // the receiver instead of playing locally.
-      if (CastStore.state.active) {
-        await this.startRemote();
-        return;
-      }
 
       try {
         // 1. Metadata (duration, resolution) — shown immediately
@@ -416,97 +361,6 @@ const VideoPlayer = {
         this.phase = 'error';
         this.errorMsg = e.message;
       }
-    },
-
-    /**
-     * Remote-control mode: no local playback. If the active session is
-     * already casting a different file, this video is cast to the receiver
-     * (auto-cast on open); otherwise we just mirror the receiver state.
-     */
-    async startRemote() {
-      // Stop any local playback (this path can be entered directly from the
-      // CastPanel without going through start()).
-      this.cleanup();
-      this.stream = null;
-      this.totalSegments = 0;
-      this.cachedSegments = 0;
-      this.remote = true;
-      this.phase = 'loading';
-      this.errorMsg = null;
-      this.statusText = 'Connecting to receiver…';
-      this.isPlaying = false;
-      this.currentTime = 0;
-      this.bufferedPercent = 0;
-      this.scrubbing = false;
-      this.controlsVisible = true;
-      this.fullyCached = false;
-
-      try {
-        this.meta = await Utils.api('/api/video/metadata?path=' + encodeURIComponent(this.path));
-      } catch { this.meta = null; }
-
-      if (CastStore.state.path !== this.path) {
-        try {
-          await CastStore.cast({
-            path: this.path,
-            name: this.displayName,
-            folder: this.folder,
-            receiver: CastStore.state.receiver,
-          });
-        } catch (e) {
-          this.phase = 'error';
-          this.errorMsg = 'Could not cast to receiver: ' + e.message;
-          return;
-        }
-      } else {
-        CastStore.startPolling();
-      }
-
-      this.onCastPlayback(CastStore.state.playback);
-      this.phase = 'ready';
-      this.statusText = 'Casting to ' + this.receiverName;
-    },
-
-    /** Session toggled from outside this component. */
-    onCastActive(active) {
-      if (active) {
-        if (!this.remote && CastStore.state.path === this.path) this.startRemote();
-        return;
-      }
-      if (!this.remote) return;
-      // Session ended (e.g. disconnect from another view): resume locally
-      const pos = this._resumeAfterCast || 0;
-      this._resumeAfterCast = 0;
-      this.remote = false;
-      this.pendingSeek = pos;
-      this.start();
-    },
-
-    /** Mirror a receiver PlaybackState onto the UI. */
-    onCastPlayback(pb) {
-      if (!this.remote || !pb) return;
-      if (typeof pb.volume === 'number') {
-        if (pb.volume > 0) { this.playerVolume = pb.volume; this.muted = false; }
-        else this.muted = true;
-      }
-      this.isPlaying = pb.status === 'playing';
-      if (!this.scrubbing) this.currentTime = Number(pb.position) || 0;
-    },
-
-    remoteSeekRelative(delta) {
-      CastStore.seekRelative(delta).catch(() => {});
-      this.showControls();
-    },
-
-    /** Stop the receiver's playback but stay in remote mode. */
-    stopReceiver() {
-      CastStore.stop().catch(() => {});
-    },
-
-    /** Leave remote mode and continue watching on this device. */
-    async watchHere() {
-      this._resumeAfterCast = (this.cast.playback && this.cast.playback.position) || 0;
-      try { await CastStore.disconnect(); } catch { /* session still ends */ }
     },
 
     async attachPlayer() {
@@ -646,17 +500,6 @@ const VideoPlayer = {
       if (this.s[key] === value) return;
       this.s[key] = value;
       this.qualityOpen = false;
-      // While casting, a quality change re-casts the file with a new
-      // transcode session (the receiver keeps playing through it).
-      if (this.remote) {
-        CastStore.cast({
-          path: this.path,
-          name: this.displayName,
-          folder: this.folder,
-          receiver: CastStore.state.receiver,
-        }).catch(e => { this.errorMsg = e.message; });
-        return;
-      }
       this.changePlayback();
     },
 
@@ -867,11 +710,6 @@ const VideoPlayer = {
     },
 
     togglePlay() {
-      if (this.remote) {
-        CastStore.toggle().catch(() => {});
-        this.showControls();
-        return;
-      }
       const player = this.$refs.video;
       if (!player) return;
       if (player.paused) player.play().catch(() => {});
@@ -879,14 +717,6 @@ const VideoPlayer = {
     },
 
     toggleMute() {
-      if (this.remote) {
-        const target = this.muted ? (this.playerVolume || 0.5) : 0;
-        CastStore.setVolume(target).catch(() => {});
-        if (target > 0) { this.playerVolume = target; this.muted = false; }
-        else this.muted = true;
-        this.showVolHud();
-        return;
-      }
       const player = this.$refs.video;
       if (!player) return;
       player.muted = !player.muted;
@@ -895,13 +725,6 @@ const VideoPlayer = {
     /** Volume slider (hover bar next to the mute button) */
     onVolSlider(e) {
       const v = parseFloat(e.target.value);
-      if (this.remote) {
-        if (v > 0) this.playerVolume = v;
-        this.muted = v === 0;
-        CastStore.setVolume(v).catch(() => {});
-        this.showVolHud();
-        return;
-      }
       const player = this.$refs.video;
       if (!player) return;
       player.volume = v;
@@ -926,11 +749,6 @@ const VideoPlayer = {
     },
 
     toggleFullscreen() {
-      // While casting, fullscreen is toggled on the receiver's screen.
-      if (this.remote) {
-        CastStore.fullscreen().catch(() => {});
-        return;
-      }
       const area = this.$refs.videoArea;
       const player = this.$refs.video;
       if (document.fullscreenElement) {
@@ -952,11 +770,6 @@ const VideoPlayer = {
       const t = parseFloat(e.target.value);
       this.scrubbing = false;
       this.currentTime = t;
-      if (this.remote) {
-        CastStore.seek(t).catch(() => {});
-        this.scheduleHide();
-        return;
-      }
       const player = this.$refs.video;
       if (player) player.currentTime = t;
       this.scheduleHide();
@@ -1037,7 +850,7 @@ const VideoPlayer = {
     /** True when the element belongs to a player control or overlay. */
     isControlTarget(el) {
       if (!el || !el.closest) return false;
-      return !!el.closest('.vcontrols, .vc-top, .vc-center, .remote-panel, ' +
+      return !!el.closest('.vcontrols, .vc-top, .vc-center, ' +
         '.vc-quality, .quality-backdrop, .video-overlay');
     },
 
@@ -1055,7 +868,7 @@ const VideoPlayer = {
       // In TV mode, if focus was on a control inside the player, park it
       // silently on .video-area (no visible ring) so the video plays cleanly
       // and the next remote/gamepad press wakes the overlay right back up.
-      if (!TvMode.state.enabled || this.remote) return;
+      if (!TvMode.state.enabled) return;
       const area = this.$refs.videoArea;
       const cur = document.activeElement;
       if (!area || !cur || cur === area || !area.contains(cur)) return;
@@ -1100,7 +913,7 @@ const VideoPlayer = {
 
     /** Handle incoming TV remote/keyboard/gamepad activity: silent pause, wake hidden UI, or reset timer. */
     onTvInput(e) {
-      if (!TvMode.state.enabled || this.phase !== 'ready' || this.remote) return;
+      if (!TvMode.state.enabled || this.phase !== 'ready') return;
       const area = this.$refs.videoArea;
       const cur = document.activeElement;
       const inPlayer = !!area && !!cur && area.contains(cur);
@@ -1130,7 +943,7 @@ const VideoPlayer = {
       const action = e.detail && e.detail.action;
       const settingsOpen = Boolean(document.querySelector('.settings-root'));
       if (action === 'quality') {
-        if (this.externalOpen || this.castOpen || settingsOpen) return;
+        if (this.externalOpen || settingsOpen) return;
         this.qualityOpen = !this.qualityOpen;
         if (this.qualityOpen) {
           this.showControls();
@@ -1142,7 +955,7 @@ const VideoPlayer = {
         }
         return;
       }
-      if (this.qualityOpen || this.castOpen || this.externalOpen || settingsOpen) return;
+      if (this.qualityOpen || this.externalOpen || settingsOpen) return;
       switch (action) {
         case 'fullscreen': this.toggleFullscreen(); break;
         case 'prev': this.goPrev(); break;
@@ -1181,7 +994,6 @@ const VideoPlayer = {
     /** TV Backspace closes open player modals first. */
     onTvBack(e) {
       if (this.externalOpen) { e.preventDefault(); this.externalOpen = false; return; }
-      if (this.castOpen) { e.preventDefault(); this.castOpen = false; return; }
       if (this.qualityOpen) { e.preventDefault(); this.qualityOpen = false; }
     },
 
@@ -1277,16 +1089,6 @@ const VideoPlayer = {
     onWheel(e) {
       if (this.phase !== 'ready') return;
       const step = e.deltaY < 0 ? 0.05 : -0.05;
-      if (this.remote) {
-        const cur = this.muted ? 0 : this.playerVolume;
-        const next = Math.min(1, Math.max(0, cur + step));
-        if (next > 0) this.playerVolume = next;
-        this.muted = next === 0;
-        CastStore.setVolume(next).catch(() => {});
-        this.showVolHud();
-        this.showControls();
-        return;
-      }
       const player = this.$refs.video;
       if (!player) return;
       const next = Math.min(1, Math.max(0, player.volume + step));
@@ -1310,7 +1112,7 @@ const VideoPlayer = {
 
     scheduleHide() {
       this.clearHideTimer();
-      if (this.remote || this.qualityOpen || this.castOpen || this.externalOpen) return;
+      if (this.qualityOpen || this.externalOpen) return;
       const player = this.$refs.video;
       if (!player || player.paused) return; // always show controls when paused
       this.hideTimer = setTimeout(() => this.hideControls(), 3000);
@@ -1325,7 +1127,7 @@ const VideoPlayer = {
         if (e.key === 'Escape') this.externalOpen = false;
         return;
       }
-      if (this.phase !== 'ready' || this.castOpen || document.querySelector('.settings-root')) return;
+      if (this.phase !== 'ready' || document.querySelector('.settings-root')) return;
       const active = document.activeElement;
       const tag = (active && active.tagName) || '';
       if (tag === 'TEXTAREA' || tag === 'SELECT' || (tag === 'INPUT' && active.type !== 'range')) return;
@@ -1338,12 +1140,10 @@ const VideoPlayer = {
           else this.togglePlay();
           break;
         case 'ArrowLeft':
-          if (this.remote) CastStore.seekRelative(-10).catch(() => {});
-          else player.currentTime = Math.max(0, player.currentTime - 10);
+          player.currentTime = Math.max(0, player.currentTime - 10);
           break;
         case 'ArrowRight':
-          if (this.remote) CastStore.seekRelative(10).catch(() => {});
-          else player.currentTime = player.currentTime + 10;
+          player.currentTime = player.currentTime + 10;
           break;
         case 'k': case 'K': this.toggleMute(); break;
         case 'f': case 'F': this.toggleFullscreen(); break;
@@ -1503,49 +1303,15 @@ const VideoPlayer = {
 
     <!-- ── Sticky video area ─────────────────────────────────────────── -->
     <div class="video-area" ref="videoArea"
-         :tabindex="(tvMode && phase === 'ready' && !controlsVisible && !remote) ? 0 : null"
+         :tabindex="(tvMode && phase === 'ready' && !controlsVisible) ? 0 : null"
          @pointerdown="onPointerDown" @pointerup="onPointerUp"
          @pointercancel="onPointerCancel" @pointerleave="onMouseLeave"
          @pointermove="onPointerMove" @wheel.prevent="onWheel"
          @click.capture="onCaptureClick"
          :class="{ 'vc-hide-cursor': !controlsVisible, 'vc-ui-hidden': !controlsVisible }">
-      <video ref="video" class="video-el" playsinline preload="auto" v-show="!remote"></video>
+      <video ref="video" class="video-el" playsinline preload="auto"></video>
 
-      <!-- ── Remote-control panel (casting mode) ──────────────────────── -->
-      <div v-if="remote" class="remote-panel">
-        <div class="remote-badge">
-          <ui-icon name="cast" :size="18"></ui-icon>
-          <span>Casting to {{ receiverName }}</span>
-        </div>
-        <div class="remote-title">
-          {{ (cast.playback && cast.playback.title) || displayName }}
-        </div>
-        <div class="remote-status"
-             :class="{ 'remote-status-err': cast.error || (cast.playback && cast.playback.status === 'error'),
-                       'remote-status-ok': cast.playback && cast.playback.status === 'playing' }">
-          {{ remoteStatusText }}
-        </div>
-        <div class="remote-actions">
-          <button class="remote-btn" @click="remoteSeekRelative(-10)" title="Back 10 seconds">
-            <ui-icon name="fastRewind" :size="30"></ui-icon>
-          </button>
-          <button class="remote-btn remote-btn-main" @click="togglePlay"
-                  :title="isPlaying ? 'Pause' : 'Play'" :aria-label="isPlaying ? 'Pause' : 'Play'">
-            <ui-icon :name="isPlaying ? 'pause' : 'play'" :size="48"></ui-icon>
-          </button>
-          <button class="remote-btn" @click="remoteSeekRelative(10)" title="Forward 10 seconds">
-            <ui-icon name="fastForward" :size="30"></ui-icon>
-          </button>
-          <button class="remote-btn" @click="stopReceiver" title="Stop on receiver">
-            <ui-icon name="stop" :size="28"></ui-icon>
-          </button>
-        </div>
-        <button class="remote-disconnect" @click="watchHere">
-          <ui-icon name="close" :size="18"></ui-icon> Disconnect &amp; watch here
-        </button>
-      </div>
-
-      <!-- ── Top bar: video title, wall clock, download/cast/external ── -->
+      <!-- ── Top bar: video title, wall clock, download/external ── -->
       <transition name="vc-fade">
         <div v-show="phase === 'ready' && controlsVisible" class="vc-top" @click.stop>
           <span class="vc-title">{{ displayName }}</span>
@@ -1553,9 +1319,6 @@ const VideoPlayer = {
             <span class="vc-clock">{{ wallClock }}</span>
             <button class="vc-btn vc-btn-sm" @click="doSaveVideo" title="Save video (original file)">
               <ui-icon name="download" :size="22"></ui-icon>
-            </button>
-            <button class="vc-btn vc-btn-sm" @click="castOpen = true" title="Cast to receiver">
-              <ui-icon name="cast" :size="22"></ui-icon>
             </button>
             <button class="vc-btn vc-btn-sm" @click="externalOpen = true" title="Open in external player">
               <ui-icon name="openExternal" :size="22"></ui-icon>
@@ -1565,7 +1328,7 @@ const VideoPlayer = {
       </transition>
 
       <!-- ── Center play/pause button (visible when the player UI is open) ── -->
-      <button v-show="phase === 'ready' && controlsVisible && !remote" class="vc-center" @click.stop="togglePlay"
+      <button v-show="phase === 'ready' && controlsVisible" class="vc-center" @click.stop="togglePlay"
               :title="isPlaying ? 'Pause' : 'Play'" :aria-label="isPlaying ? 'Pause' : 'Play'">
         <ui-icon :name="isPlaying ? 'pause' : 'play'" :size="72"></ui-icon>
       </button>
@@ -1589,9 +1352,6 @@ const VideoPlayer = {
         <button class="btn primary" @click="restart">
           <ui-icon name="restart" :size="20"></ui-icon> Restart playback
         </button>
-        <button v-if="remote" class="btn" @click="watchHere">
-          <ui-icon name="close" :size="20"></ui-icon> Disconnect and play locally
-        </button>
       </div>
 
       <!-- ── Custom control bar (UI only) ──────────────────────── -->
@@ -1600,11 +1360,11 @@ const VideoPlayer = {
 
         <div class="vc-seek-row">
           <span class="vc-time">{{ fmt(currentTime) }}</span>
-          <input class="vc-seek" type="range" min="0" :max="displayDuration || 0" step="0.1"
+          <input class="vc-seek" type="range" min="0" :max="seekMax || 0" step="0.1"
                  data-tv-step="10" data-tv-down="[data-tv-id='play']"
-                 :value="currentTime" :disabled="!displayDuration" :style="seekStyle()"
+                 :value="currentTime" :disabled="!seekMax" :style="seekStyle()"
                  @input="seekInput" @change="seekCommit" aria-label="Seek">
-          <span class="vc-time vc-time-dur">{{ fmt(displayDuration) }}</span>
+          <span class="vc-time vc-time-dur">{{ fmt(seekMax) }}</span>
         </div>
 
         <div class="vc-btn-row">
@@ -1638,11 +1398,11 @@ const VideoPlayer = {
             <button class="vc-btn" @click="qualityOpen = !qualityOpen" title="Playback quality">
               <ui-icon name="tune" :size="24"></ui-icon>
             </button>
-            <button v-if="!remote" class="vc-btn" :class="{ 'vc-btn-on': loopOn }" @click="toggleLoop"
+            <button class="vc-btn" :class="{ 'vc-btn-on': loopOn }" @click="toggleLoop"
                     :title="loopOn ? 'Loop on — tap to stop looping' : 'Loop this video'">
               <ui-icon name="loop" :size="24"></ui-icon>
             </button>
-            <button v-if="!remote && isTouchDevice && isFullscreen" class="vc-btn"
+            <button v-if="isTouchDevice && isFullscreen" class="vc-btn"
                     :class="{ 'vc-btn-on': landscape }" @click="toggleOrientation"
                     :title="landscape ? 'Switch to portrait' : 'Switch to landscape'">
               <ui-icon name="screenRotation" :size="24"></ui-icon>
@@ -1713,9 +1473,6 @@ const VideoPlayer = {
         <div v-else-if="s.showTranscodeInfo && stream && fullyCached" class="buffer-done">
           <ui-icon name="check" :size="18"></ui-icon> Fully buffered
         </div>
-        <div v-else-if="s.showTranscodeInfo && remote" class="buffer-done">
-          <ui-icon name="cast" :size="18"></ui-icon> {{ activeConfig }}
-        </div>
         <div v-else-if="s.showTranscodeInfo && useDirect" class="buffer-done">
           <ui-icon name="check" :size="18"></ui-icon> Direct play — no transcoding
         </div>
@@ -1738,10 +1495,6 @@ const VideoPlayer = {
         </ul>
       </section>
     </main>
-
-    <!-- ── Cast-to-receiver modal ───────────────────────────────────── -->
-    <cast-panel v-if="castOpen" :path="path" :file-name="displayName" :folder="folder"
-                @close="castOpen = false"></cast-panel>
 
     <!-- ── External player modal ─────────────────────────────────────── -->
     <div v-if="externalOpen" class="modal-root" @click.self="externalOpen = false">

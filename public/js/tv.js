@@ -77,7 +77,6 @@ const TvMode = (function () {
    */
   const PREFER = [
     '.vc-center',
-    '.remote-btn-main',
     'main .file-row',
     'main .gallery-card',
     'main .up-btn',

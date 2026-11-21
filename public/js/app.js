@@ -1,6 +1,6 @@
 /* ─── App root: registration, hash router, theme ──────────────────────────── */
 
-/* global Vue, UiIcon, SettingsStore, TvMode, FileManager, HomePage, VideoPlayer, SettingsPanel, ToggleSwitch, CastPanel */
+/* global Vue, UiIcon, SettingsStore, TvMode, FileManager, HomePage, VideoPlayer, SettingsPanel, ToggleSwitch */
 
 (function () {
   'use strict';
@@ -111,7 +111,6 @@
   app.component('tv-toggle', TvMode.TvToggle);
   app.component('file-manager', FileManager);
   app.component('home-page', HomePage);
-  app.component('cast-panel', CastPanel);
   app.component('video-player', VideoPlayer);
   app.component('settings-panel', SettingsPanel);
 

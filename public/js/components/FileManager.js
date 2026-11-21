@@ -24,11 +24,6 @@ const FileManager = {
       editPathText: '',
       editingPath: false,
       menuFor: null,        // path of the folder whose context menu is open
-      // cast-to-receiver modal (opened from a video row menu)
-      castOpen: false,
-      castPath: '',
-      castName: '',
-      castFolder: '',
       // Files whose thumbnail could not be generated (icon fallback)
       noThumb: {},
       // scroll position memory, keyed by folder path (shared across instances)
@@ -282,17 +277,24 @@ const FileManager = {
     },
 
     // ── Gallery item actions (no ⋮ button: long press / right click) ──
-    /** Open the actions menu for an item (idempotent: used by both paths). */
+    /** Open the actions menu for a folder (idempotent: used by both paths). */
     openItemMenu(item) {
+      if (!item.isDirectory) return;
       this.menuFor = item.path;
     },
 
+    onCardContextMenu(item, e) {
+      if (!item.isDirectory) return;
+      e.preventDefault();
+      this.openItemMenu(item);
+    },
+
     /**
-     * Touch has no right click: hold a card (or a remote's select key, which
-     * dispatches `contextmenu` through tv.js) to open its actions.
+     * Touch has no right click: hold a folder card (or a remote's select key,
+     * which dispatches `contextmenu` through tv.js) to open its actions.
      */
     onCardPointerDown(item, e) {
-      if (e.pointerType === 'mouse') return; // right click already does it
+      if (!item.isDirectory || e.pointerType === 'mouse') return; // right click already does it
       clearTimeout(this._lpTimer);
       this._lpFired = false;
       this._lpTimer = setTimeout(() => {
@@ -374,15 +376,6 @@ const FileManager = {
       } catch (e) {
         alert(`Delete failed: ${e.message}`);
       }
-    },
-
-    // ── Cast to a Castor receiver (video row menu) ─────────────────
-    castItem(item) {
-      this.closeMenu();
-      this.castPath = item.path;
-      this.castName = item.name;
-      this.castFolder = this.data ? this.data.path : '';
-      this.castOpen = true;
     },
   },
 
@@ -504,7 +497,7 @@ const FileManager = {
 
       <!-- ── File list ───────────────────────────────────────────────── -->
       <ul v-else-if="s.viewMode === 'list'" class="file-list">
-        <li v-for="item in visibleItems" :key="item.path" :class="{ 'has-menu': item.isDirectory || item.isVideo }">
+        <li v-for="item in visibleItems" :key="item.path" :class="{ 'has-menu': item.isDirectory }">
           <button class="file-row" :data-tv-path="item.path" @click="openItem(item)">
             <span class="file-icon" :class="itemClass(item)">
               <ui-icon :name="itemIcon(item)" :size="26"></ui-icon>
@@ -517,24 +510,20 @@ const FileManager = {
             <ui-icon v-else-if="item.isDirectory" name="chevronRight" :size="22" class="file-chevron"></ui-icon>
           </button>
 
-          <!-- Row context menu (⋮): folder actions / video cast -->
-          <template v-if="item.isDirectory || item.isVideo">
+          <!-- Row context menu (⋮): folder actions -->
+          <template v-if="item.isDirectory">
             <button class="row-menu-btn" @click.stop="toggleMenu(item)"
-                    :title="item.isDirectory ? 'Folder actions' : 'Video actions'" :aria-label="item.isDirectory ? 'Folder actions' : 'Video actions'">
+                    title="Folder actions" aria-label="Folder actions">
               <ui-icon name="moreVert" :size="20"></ui-icon>
             </button>
             <div v-if="menuFor === item.path" class="row-menu">
-              <button v-if="item.isDirectory" class="row-menu-item" @click="downloadZip(item)">
+              <button class="row-menu-item" @click="downloadZip(item)">
                 <ui-icon name="download" :size="18"></ui-icon>
                 <span>Download as ZIP</span>
               </button>
-              <button v-if="item.isDirectory" class="row-menu-item danger" @click="deleteFolder(item)">
+              <button class="row-menu-item danger" @click="deleteFolder(item)">
                 <ui-icon name="delete" :size="18"></ui-icon>
                 <span>Delete folder…</span>
-              </button>
-              <button v-if="item.isVideo" class="row-menu-item" @click="castItem(item)">
-                <ui-icon name="cast" :size="18"></ui-icon>
-                <span>Cast to receiver…</span>
               </button>
             </div>
           </template>
@@ -551,7 +540,7 @@ const FileManager = {
                on every move. Actions open on long press or right click, and
                tv.js dispatches a contextmenu event for a held select key. -->
           <button class="gallery-card" :data-tv-path="item.path" @click="onCardClick(item)"
-                  @contextmenu.prevent="openItemMenu(item)"
+                  @contextmenu="onCardContextMenu(item, $event)"
                   @pointerdown="onCardPointerDown(item, $event)"
                   @pointerup="onCardPointerUp"
                   @pointercancel="onCardPointerUp">
@@ -569,30 +558,22 @@ const FileManager = {
             </span>
           </button>
 
-          <!-- Actions menu: opened by long press / right click -->
-          <template v-if="item.isDirectory || item.isVideo">
+          <!-- Actions menu: opened by long press / right click on folders -->
+          <template v-if="item.isDirectory">
             <div v-if="menuFor === item.path" class="row-menu">
-              <button v-if="item.isDirectory" class="row-menu-item" @click="downloadZip(item)">
+              <button class="row-menu-item" @click="downloadZip(item)">
                 <ui-icon name="download" :size="18"></ui-icon>
                 <span>Download as ZIP</span>
               </button>
-              <button v-if="item.isDirectory" class="row-menu-item danger" @click="deleteFolder(item)">
+              <button class="row-menu-item danger" @click="deleteFolder(item)">
                 <ui-icon name="delete" :size="18"></ui-icon>
                 <span>Delete folder…</span>
-              </button>
-              <button v-if="item.isVideo" class="row-menu-item" @click="castItem(item)">
-                <ui-icon name="cast" :size="18"></ui-icon>
-                <span>Cast to receiver…</span>
               </button>
             </div>
           </template>
         </div>
       </div>
     </main>
-
-    <!-- ── Cast-to-receiver modal ───────────────────────────────────── -->
-    <cast-panel v-if="castOpen" :path="castPath" :file-name="castName" :folder="castFolder"
-                @close="castOpen = false"></cast-panel>
   </div>
   `,
 };

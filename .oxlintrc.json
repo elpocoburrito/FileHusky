@@ -9,7 +9,6 @@
     "Hls": "readonly",
     "Utils": "readonly",
     "SettingsStore": "readonly",
-    "CastStore": "readonly",
     "TvMode": "readonly",
     "ICONS": "readonly",
     "UiIcon": "readonly",
@@ -17,7 +16,6 @@
     "FileManager": "readonly",
     "HomePage": "readonly",
     "VideoPlayer": "readonly",
-    "SettingsPanel": "readonly",
-    "CastPanel": "readonly"
+    "SettingsPanel": "readonly"
   }
 }
