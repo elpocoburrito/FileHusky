@@ -8,17 +8,57 @@ node_modules/
 # Docker files themselves
 Dockerfile
 docker-compose.yml
+.dockerignore
 
 # Docs / misc
 *.md
-.dockerignore
 
-# Large test media (keep local only)
-test.mp4
+# Environment & local configuration
+.env
+.env.*
+*.local
+file-permissions.yaml
 
-# Runtime artifacts
+# Runtime / cache / logs / agent artifacts
+.pi/
+data/
+tmp/
+logs/
 *.log
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Media files
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.wmv
+*.flv
+*.webm
+*.m4v
+*.ts
+*.m4s
+*.m3u8
+*.mp3
+*.flac
+*.wav
+*.ogg
+*.m4a
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.webp
 
 # OS / editor cruft
+.vscode/
+.idea/
 .DS_Store
 Thumbs.db
+*.swp
+*.swo
+*~

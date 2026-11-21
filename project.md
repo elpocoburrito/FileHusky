@@ -108,17 +108,14 @@ properties, dark/light themes). Docker support via `docker-compose.yml`
 
 ----
 
-## 2026-10-08 — Cast to a Castor receiver (LAN casting)
+## 2026-10-08 — Cast to a LAN receiver (later removed)
 
-A LAN receiver app plays a URL or
-file path sent to its HTTP API (`POST /api/cast {module,target}`, port 8642).
-SrvFiles can now cast the video it is showing — or any video row — to a
-receiver on the LAN, in two modes: **local file** (receiver on the same host
-as this server: send the path) and **remote/transcode** (receiver on another
-device: send an HTTP URL served by this server).
+LAN receiver casting played a URL or file path sent to a receiver HTTP API
+(`POST /api/cast {module,target}`, port 8642), supporting **local file**
+and **remote/transcode** modes.
 
-- **Discovery**: new `castor-mdns.js` — a zero-dependency DNS-SD browser for
-  `_castor._tcp` (what Castor advertises). Two gotchas encoded in it:
+- **Discovery**: `castor-mdns.js` — a zero-dependency DNS-SD browser for
+  `_castor._tcp`. Two gotchas encoded in it:
   - the query is sent **per non-internal IPv4 interface** (`setMulticastInterface`),
     because the OS default multicast egress can be a VPN/tunnel interface that
     never sees LAN multicast;
@@ -165,10 +162,10 @@ device: send an HTTP URL served by this server).
 - Also cleaned up when touched: `catch (_) {}` → `catch {}`, unused `req`
   params renamed `_req`, removed dead `sanitizePath`, and `a && b()` →
   `if (a) b()` in the segment pipeline (linter blockers).
-- Verified against a mock receiver and a live receiver: remote mp4 → raw URL played in-window
-  (position advancing), remote mkv → HLS session delivered playlist/init/
-  segments and played, local mode handed over the host path. Discovery found
-  the real receiver as a single deduped LAN entry.
+- Verified against a mock receiver and a live receiver: remote mp4 → raw URL
+  played in-window (position advancing), remote mkv → HLS session delivered
+  playlist/init/segments and played, local mode handed over the host path.
+  Discovery found the receiver as a single deduped LAN entry.
 - `README.md` documents the feature: a bullet in the feature list and an
   “API (casting to a Castor receiver)” section (endpoints + the bridge-network
   discovery caveat).
@@ -399,9 +396,9 @@ a media swap.
 
 ## Fix: Firefox Android portrait flash on the first "next video"
 
-Platform: **Firefox for Android**, app's own
-fullscreen overlay (a div, not the native player), and the *whole UI* rotates
-to portrait and back. That rules out several earlier guesses:
+Platform: **Firefox for Android**, app's own fullscreen overlay (a div, not
+the native player), where the *whole UI* rotates to portrait and back. That
+rules out several earlier guesses:
 
 - `ScreenOrientation.lock()` did not exist in Firefox until **144**
   (2025-10-14) and is still only partially supported, so on older Fenix the
@@ -1068,3 +1065,33 @@ mode) plus explicit progress-bar → play/pause focus routing:
   toggle + D-pad wake, and seek→Down→Play/Pause for keyboard & gamepad) plus
   all 116 existing checks (`tv-audit`, `player-tv-autohide`, `render-check`,
   `render-audit`).
+
+----
+
+## Feature removals & repository sanitization
+
+- **Removed tagging & ratings**:
+  - Removed SQLite database setup (`data/tags.db`) and `/api/tags`,
+    `/api/groups`, `/api/video/tags` routes from `server.js`.
+  - Deleted `public/js/components/TagPanel.js` and `TagManager.js`, removed
+    the `#/tags` route, header/player tag buttons, tagging overlays, `label`
+    and `star` icons, tagging CSS, `.tag-fs` TV layer, and oxlint globals.
+- **Removed casting & remote-control mode**:
+  - Removed `/api/video/cast/*`, `/api/castor/*`, `castStreams`, and
+    `castor-mdns.js` (plus its `Dockerfile` copy and `docker-compose.yml`
+    comment).
+  - Deleted `public/js/castStore.js` and `public/js/components/CastPanel.js`,
+    removed remote-control mode and cast modals from `VideoPlayer.js` and
+    `FileManager.js`, limited browse context menus to folders only, and
+    removed `cast`/`stop`/`fastRewind`/`fastForward` icons, casting CSS,
+    `.remote-btn-main` TV preference, and oxlint globals.
+- **Sanitized repository & history**:
+  - Replaced personal default home folder paths with generic `/mnt` and
+    `/media` (`server.js`, `Home.js`, `README.md`).
+  - Removed `file-permissions.yaml` from tracking and git history; hardened
+    `.gitignore` and `.dockerignore` to exclude local configs, `.env*`,
+    databases, logs, agent runtime directories, and media files.
+  - Scrubbed private author/committer names, emails, paths, and device
+    details from commit metadata, commit messages, and historical blobs;
+    expired reflogs and pruned unreachable git objects.
+  - Removed local media, runtime data, and log files from the workspace.

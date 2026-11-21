@@ -1,17 +1,59 @@
 # Dependencies
 node_modules/
 
-# Runtime / cache
-*.log
+# Environment & local configuration
+.env
+.env.*
+*.local
+file-permissions.yaml
+
+# Runtime / cache / databases
 tmp/
 data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
 
-# Pi agent runtime
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Agent runtime
 .pi/
 
-# Large test media (keep local only)
-test.mp4
+# Media files (keep user/test media out of the repository)
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.wmv
+*.flv
+*.webm
+*.m4v
+*.ts
+*.m4s
+*.m3u8
+*.mp3
+*.flac
+*.wav
+*.ogg
+*.m4a
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.webp
 
 # OS / editor cruft
+.vscode/
+.idea/
 .DS_Store
 Thumbs.db
+*.swp
+*.swo
+*~
